@@ -18,7 +18,12 @@ static int str_eq(const char *a, const char *b)
 /* THE allowlist. Nothing else is ever written, erased or hashed. */
 int stor_name_allowed(const char *name)
 {
+#ifdef BOARD_EQUULEUS
+	(void)name;
+	return 0;	/* Mi 8 Pro: userdata and boot belong to LineageOS; nothing is flashed from here */
+#else
 	return str_eq(name, "userdata") || str_eq(name, "boot") || str_eq(name, "logo");
+#endif
 }
 
 static uint32_t le32(const uint8_t *p)

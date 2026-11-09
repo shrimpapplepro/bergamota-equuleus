@@ -9,7 +9,11 @@
 /* reserved-memory cont_splash_mem@9d400000, simple-framebuffer 1080x2246 */
 #define FB_BASE			0x9d400000UL
 #define FB_W			1080
+#ifdef BOARD_EQUULEUS
+#define FB_H			2248	/* Mi 8 Pro: same SoC and splash region, two more rows */
+#else
 #define FB_H			2246
+#endif
 /* sdm845 imem@146bf000, restart_reason@65c */
 #define IMEM_RESTART_REASON	0x146bf65cUL
 #else

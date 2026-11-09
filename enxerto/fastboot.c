@@ -67,7 +67,12 @@ void fb_init(struct fb *fb, const struct fb_transport *t, const struct fb_platfo
 
 int fb_part_allowed(const char *name)
 {
+#ifdef BOARD_EQUULEUS
+	(void)name;
+	return 0;	/* Mi 8 Pro: see storage.c */
+#else
 	return fb_eq(name, "userdata") || fb_eq(name, "boot") || fb_eq(name, "logo");
+#endif
 }
 
 /* "OKAY" / "FAIL" / "INFO" / "DATA" + text, at most 64 bytes. */

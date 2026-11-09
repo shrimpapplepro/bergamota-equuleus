@@ -72,6 +72,10 @@ BOARDS = {
         bluetooth=True),
 }
 
+# Xiaomi Mi 8 Pro: the Poco F1's SoC and splash region, 1080x2248. 'xiaomi,beryllium' stays so the kernel's SDM845 paths run.
+BOARDS['equuleus'] = dict(BOARDS['beryllium'], fb_wh=(1080, 2248),
+                          compat=['xiaomi,equuleus', 'xiaomi,beryllium', 'xiaomi,sweet', 'qcom,sdm845'])
+
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
