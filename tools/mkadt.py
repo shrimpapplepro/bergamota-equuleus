@@ -73,7 +73,8 @@ BOARDS = {
 }
 
 # Xiaomi Mi 8 Pro: the Poco F1's SoC and splash region, 1080x2248. 'xiaomi,beryllium' stays so the kernel's SDM845 paths run.
-BOARDS['equuleus'] = dict(BOARDS['beryllium'], fb_wh=(1080, 2248),
+# high_mem: the 8 GB part is contiguous from 4 GiB to 0x2_7c8a0000 (live FDT memory node), nothing reserved above 4 GiB.
+BOARDS['equuleus'] = dict(BOARDS['beryllium'], fb_wh=(1080, 2248), high_mem=0x17c800000,
                           compat=['xiaomi,equuleus', 'xiaomi,beryllium', 'xiaomi,sweet', 'qcom,sdm845'])
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
@@ -161,7 +162,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, 
     ident = IDENTITIES[identity]
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     b = BOARDS[board]
-    phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
+    phys_base, mem_size = (HIGH_PHYS_BASE, b.get('high_mem', HIGH_MEM_SIZE)) if highmem else (PHYS_BASE, MEM_SIZE)
     if board != 'sweet' and not qemu:
         if not highmem:
             phys_base, mem_size = b['mem']
