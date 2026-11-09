@@ -1,0 +1,248 @@
+Mi 8 Pro touch: ST FingerTip at 0x49 over the bit-banged bus, its power-up order, and the L28 rail.
+
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -417,7 +417,9 @@
+ sweet_rpmh_vreg_enable(const char *res, unsigned mv)
+ {
+ 	/* Board-specific helper: do not apply PMIC5-LDO policy to arbitrary resources. */
+-	if (!res || strcmp(res, "ldoc11") || mv < 2950 || mv > 3400) {
++	/* Mi 8 Pro touch controller: PM8998 LDO28, held at exactly 3.3 V by this phone's device tree. */
++	bool equuleus_touch = res && !strcmp(res, "ldoa28") && mv == 3300 && sweet_board_is("xiaomi,equuleus");
++	if (!equuleus_touch && (!res || strcmp(res, "ldoc11") || mv < 2950 || mv > 3400)) {
+ 		printf("SWEET RPMH: expected ldoc11 and 2950..3400 mV\n");
+ 		return EINVAL;
+ 	}
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -47,6 +47,18 @@
+ #define TOUCH_FTS        2
+ #define TOUCH_NVT        3
+ #define TOUCH_FT8719     4
++#define TOUCH_ST_FTS     5
++/* ST FingerTip (st,fts) at 0x49, Xiaomi Mi 8 Pro: one 8-byte event per read of 0x86, id 0 once the FIFO is empty. */
++#define STFTS_ADDR       0x49u
++#define STFTS_READ_EVENT 0x86u
++#define STFTS_SCAN_MODE  0xa0u
++#define STFTS_EVT_BYTES  8u
++#define STFTS_FIFO_DEPTH 32u
++#define STFTS_EVT_READY  0x03u
++#define STFTS_EVT_ENTER  0x13u
++#define STFTS_EVT_MOTION 0x23u
++#define STFTS_EVT_LEAVE  0x33u
++#define STFTS_VDD_PA     0x03d17000u /* TLMM SOUTH tile, GPIO 23: enables the controller's 1.8 V supply */
+ /* FT8719 (Focaltech TDDI, EBBG Poco F1) */
+ #define FT_ADDR          0x38u
+ #define FT_ID_REG        0xa3u  /* chip id high: 0x87 */
+@@ -81,6 +93,11 @@
+ 	"SE14", 0x00a98000u, 0x18738u, (0x0fu << 18) | (1u << 28), 0x18734u,
+ 	33, 34, 2, 31, 32, 1080, 2246, false,
+ };
++/* Same bus and pins as the Poco F1; the controller and its power-up differ. */
++static const struct touch_board touch_equuleus = {
++	"SE14", 0x00a98000u, 0x18738u, (0x0fu << 18) | (1u << 28), 0x18734u,
++	33, 34, 2, 31, 32, 1080, 2248, false,
++};
+ static const struct touch_board *tb = &touch_sweet;
+ /* GT9896 is Yellowstone in Xiaomi sweet-r-oss, not the Berlin protocol. */
+ #define GOODIX_PID_REG   0x4022u
+@@ -914,7 +931,132 @@
+ }
+ 
+ /* Poco F1: NT36672A, powered with the panel. Reset only if it does not answer. */
++static int
++stfts_start_scan(void)
++{
++	const uint8_t cmd[3] = {STFTS_SCAN_MODE, 0x00, 0x01}; /* active scan, multi-touch */
++	return bb_xfer(STFTS_ADDR, cmd, sizeof(cmd), NULL, 0);
++}
++
++static int
++touch_st_fts(void)
++{
++	int x[TOUCH_MAX], y[TOUCH_MAX];
++	uint32_t mask = st.active;
++	bool changed = false;
++	memcpy(x, st.x, sizeof(x));
++	memcpy(y, st.y, sizeof(y));
++	for (unsigned i = 0; i < STFTS_FIFO_DEPTH; ++i) {
++		uint8_t e[STFTS_EVT_BYTES];
++		int err = touch_read(STFTS_ADDR, STFTS_READ_EVENT, false, e, sizeof(e));
++		if (err) {
++			return err;
++		}
++		if (e[0] == 0) {
++			break;
++		}
++		if (e[0] == STFTS_EVT_READY) {
++			/* The controller reset itself: sensing is off and its contacts are gone. */
++			printf("SWEET TOUCH: ST FTS reset itself; restarting the scan\n");
++			changed |= mask != 0;
++			mask = 0;
++			err = stfts_start_scan();
++			if (err) {
++				return err;
++			}
++			continue;
++		}
++		if (e[0] != STFTS_EVT_ENTER && e[0] != STFTS_EVT_MOTION && e[0] != STFTS_EVT_LEAVE) {
++			continue;
++		}
++		unsigned id = e[1] >> 4, type = e[1] & 15u;
++		if (id >= TOUCH_MAX) {
++			continue;
++		}
++		uint32_t bit = 1u << id;
++		if (e[0] == STFTS_EVT_LEAVE || type < 1u || type > 3u) { /* finger, glove and stylus are contacts */
++			changed |= (mask & bit) != 0;
++			mask &= ~bit;
++			continue;
++		}
++		unsigned px = ((unsigned)(e[3] & 15u) << 8) | e[2];
++		unsigned py = ((unsigned)e[4] << 4) | (e[3] >> 4);
++		if (px >= tb->w || py >= tb->h) {
++			continue; /* off the panel: a corrupt read */
++		}
++		x[id] = (int)px;
++		y[id] = (int)py;
++		mask |= bit;
++		changed = true;
++	}
++	if (changed) {
++		touch_report(mask, x, y);
++	}
++	return 0;
++}
++
++/*
++ * Power-up as on the phone's own kernel: 1.8 V (GPIO 23) first, then 3.3 V (LDO28), then the reset pulse.
++ * The other order leaves SCL held low by the unpowered controller.
++ */
+ static bool
++touch_equuleus_start(void)
++{
++	vm_offset_t vdd = ml_io_map(STFTS_VDD_PA, 0x1000);
++	uint8_t e[STFTS_EVT_BYTES] = {0};
++	int err = ETIMEDOUT;
++	if (!vdd) {
++		printf("SWEET TOUCH: GPIO23 mapping failed\n");
++		return false;
++	}
++	touch_gpio(tb->irq, 0, 3, 0, false, false);
++	touch_gpio(tb->sda, 0, 3, 0, false, false);
++	touch_gpio(tb->scl, 0, 3, 0, false, false);
++	touch_wr(vdd, 4u, (touch_rd(vdd, 4u) & ~2u) | 2u);
++	touch_wr(vdd, 0u, (touch_rd(vdd, 0u) & ~0x3ffu) | 0x200u);
++	touch_wait(10);
++	int rail = sweet_rpmh_vreg_enable("ldoa28", 3300);
++	printf("SWEET TOUCH: L28 3.3 V vote -> %d\n", rail);
++	if (rail) {
++		return false;
++	}
++	touch_gpio(tb->rst, 0, 3, 7, true, true);
++	touch_wait(10);
++	touch_gpio(tb->rst, 0, 3, 7, true, false);
++	touch_wait(10);
++	touch_gpio(tb->rst, 0, 3, 7, true, true);
++	touch_wait(200);
++	st.probing = true;
++	for (unsigned i = 0; err && i < 5; ++i) {
++		err = touch_read(STFTS_ADDR, STFTS_READ_EVENT, false, e, sizeof(e));
++		if (err) {
++			touch_wait(20);
++		}
++	}
++	st.probing = false;
++	printf("SWEET TOUCH: probe ST FTS at %#x: err=%d event=%02x\n", STFTS_ADDR, err, e[0]);
++	if (err) {
++		return false;
++	}
++	for (unsigned i = 0; e[0] != STFTS_EVT_READY && i < 100; ++i) {
++		if (e[0] == 0) {
++			touch_wait(10);
++		}
++		err = touch_read(STFTS_ADDR, STFTS_READ_EVENT, false, e, sizeof(e));
++		if (err) {
++			break;
++		}
++	}
++	int scan = stfts_start_scan();
++	printf("SWEET TOUCH: ST FTS ready=%d err=%d scan=%d\n", e[0] == STFTS_EVT_READY, err, scan);
++	if (scan) {
++		return false;
++	}
++	st.kind = TOUCH_ST_FTS;
++	return true;
++}
++
++static bool
+ touch_beryllium_start(void)
+ {
+ 	printf("SWEET TOUCH: TLMM rst%u=%#x/%#x irq%u=%#x/%#x sda=%#x scl=%#x\n",
+@@ -1065,13 +1207,13 @@
+ 	}
+ 	if (!tb->rpmh_l11c) {
+ 		uint32_t ifdis = touch_rd(st.se, 0x64), fw = touch_rd(st.se, SE_FW);
+-		st.bitbang = (ifdis & 1u) != 0;
++		st.bitbang = (ifdis & 1u) != 0 || tb == &touch_equuleus; /* its serial engine has no usable FIFO */
+ 		printf("SWEET TOUCH: %s fw=%#x if-disable=%#x -> %s\n", tb->name, fw, ifdis,
+ 		    st.bitbang ? "GSI-only SE, bit-banged I2C on the GPIOs" : "FIFO I2C");
+ 		if (!st.bitbang && (!touch_clocks() || !touch_se_init())) {
+ 			goto out;
+ 		}
+-		if (!touch_beryllium_start()) {
++		if (!(tb == &touch_equuleus ? touch_equuleus_start() : touch_beryllium_start())) {
+ 			goto out;
+ 		}
+ 		goto selected;
+@@ -1120,7 +1262,7 @@
+ 	st.kind = goodix ? TOUCH_GOODIX : TOUCH_FTS;
+ selected:
+ 	printf("SWEET TOUCH: selected %s, %ux%u, poll=%ums i2c-half=%uus irq-hint=%d\n",
+-	    st.kind == TOUCH_NVT ? "NT36672A" : st.kind == TOUCH_FT8719 ? "Focaltech FT8719" :
++	    st.kind == TOUCH_ST_FTS ? "ST FingerTip" : st.kind == TOUCH_NVT ? "NT36672A" : st.kind == TOUCH_FT8719 ? "Focaltech FT8719" :
+ 	    st.kind == TOUCH_GOODIX ? "GT9896 Yellowstone" : "Focaltech 54:52",
+ 	    tb->w, tb->h, touch_poll_ms, bb_half_us, st.irq_hint);
+ 	unsigned errors = 0, ticks = 0;
+@@ -1129,7 +1271,7 @@
+ 		/* sweet's IRQ lines idle high (low = report pending); NT36672A pulses high. */
+ 		bool irq_level = touch_rd(st.gpio, TOUCH_GPIO_IO(tb->irq)) & 1u;
+ 		bool pending = st.kind == TOUCH_NVT ? irq_level : !irq_level;
+-		if (st.bitbang) {
++		if (st.bitbang && st.kind != TOUCH_ST_FTS) { /* the ST controller holds its line low while events wait */
+ 			/* NT36672A pulses its IRQ: use the TLMM edge latch */
+ 			pending = touch_rd(st.gpio, TOUCH_GPIO_CFG(tb->irq) + 0xcu) & 1u;
+ 			if (pending) {
+@@ -1141,10 +1283,10 @@
+ 		 * Its report buffer keeps the last frame, so an unprompted read
+ 		 * replays old contacts as new touches (ghost taps).
+ 		 */
+-		bool periodic = st.kind == TOUCH_FT8719 ? (++ticks % 50u) == 0 :
++		bool periodic = st.kind == TOUCH_FT8719 || st.kind == TOUCH_ST_FTS ? (++ticks % 50u) == 0 :
+ 		    (st.kind != TOUCH_NVT && (++ticks % 10u) == 0);
+ 		/* slow bit-banged readers: IRQ edge or finger down only */
+-		bool paced = st.kind == TOUCH_NVT || st.kind == TOUCH_FT8719;
++		bool paced = st.kind == TOUCH_NVT || st.kind == TOUCH_FT8719 || st.kind == TOUCH_ST_FTS;
+ 		/*
+ 		 * While a finger is down read on every IRQ edge (a new frame) and at
+ 		 * least every ~8 ms, so a missed edge cannot leave a stuck contact;
+@@ -1159,7 +1301,8 @@
+ 			touch_trace_why = pending ? 'e' : 'a';
+ 			int err = st.kind == TOUCH_GOODIX ? touch_goodix() :
+ 			    st.kind == TOUCH_NVT ? touch_novatek() :
+-			    st.kind == TOUCH_FT8719 ? touch_ft8719() : touch_focaltech();
++			    st.kind == TOUCH_FT8719 ? touch_ft8719() :
++			    st.kind == TOUCH_ST_FTS ? touch_st_fts() : touch_focaltech();
+ 			if (err) {
+ 				/* At most one line a minute: bad frames are frequent and harmless */
+ 				static uint64_t last_log;
+@@ -1203,6 +1346,9 @@
+ 		tb = &touch_beryllium;
+ 		st.irq_hint = 1; /* bit-banged reads are slow: only on IRQ edges or while touched */
+ 	}
++	if (sweet_board_is("xiaomi,equuleus")) {
++		tb = &touch_equuleus;
++	}
+ 	(void)PE_parse_boot_argn("sweettouch", &enabled, sizeof(enabled));
+ 	(void)PE_parse_boot_argn("sweettouchirq", &st.irq_hint, sizeof(st.irq_hint));
+ 	/*
