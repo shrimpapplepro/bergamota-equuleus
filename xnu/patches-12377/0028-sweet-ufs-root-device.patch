@@ -24,7 +24,7 @@ index 0000000000000000000000000000000000000000..9f4665b2e5a3e2975b837c461ad0df20
 + * state: it points the transfer request list at its own memory (verifying the
 + * host took it before ringing any doorbell) and issues polled SCSI commands,
 + * one at a time, to LUN 0. It finds one GPT partition by name (boot-arg
-+ * ufsroot=, default "userdata") and exposes it as the BSD disk ufsroot0
++ * ufsroot=, default "ios_root") and exposes it as the BSD disk ufsroot0
 + * (rufsroot0), with 512-byte logical sectors over the device's 4 KiB blocks.
 + * Root on it with rd=ufsroot0.
 + *
@@ -479,7 +479,7 @@ index 0000000000000000000000000000000000000000..9f4665b2e5a3e2975b837c461ad0df20
 +	DTEntry node;
 +	uintptr_t const *reg = NULL;
 +	unsigned int size = 0;
-+	char want[64] = "userdata";
++	char want[64] = "ios_root";
 +	int error;
 +
 +	if (SecureDTLookupEntry(NULL, "/sweet-ufs", &node) != kSuccess ||

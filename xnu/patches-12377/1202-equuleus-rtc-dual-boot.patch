@@ -1,0 +1,85 @@
+Dual boot wall clock: LineageOS arms the PM8998 RTC alarm whose data registers hold the iOS offset. Disarm it before storing the offset, and publish kern.sweet_rtc_raw so /usr/local/bin/sweetclock can keep a second copy on the iOS volume.
+
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -14,6 +14,8 @@
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+ #include <sys/systm.h>
++#include <sys/errno.h>
++#include <sys/sysctl.h>
+ #include <machine/machine_routines.h>
+ #include <IOKit/IOLocks.h>
+ #include "sweet_spmi.h"
+@@ -248,8 +250,12 @@
+ 		}
+ 	}
+ 	if (sid == 0) {
+-		/* PON spare (reboot reason); RTC alarm data 0x6140-0x6143 (the RTC offset, sweet_rtc_set) */
+-		return (addr == 0x088fu && len == 1) || (addr >= 0x6140u && addr + len <= 0x6144u);
++		/*
++		 * PON spare (reboot reason); RTC alarm data 0x6140-0x6143 (the RTC offset, sweet_rtc_set); RTC alarm
++		 * control 0x6146 (patch 0262: disarm an alarm another OS left armed, so the offset can be stored)
++		 */
++		return (addr == 0x088fu && len == 1) || (addr >= 0x6140u && addr + len <= 0x6144u) ||
++		       (addr == 0x6146u && len == 1);
+ 	}
+ 	if (sid != 3) {
+ 		return false;
+@@ -468,9 +474,27 @@
+ sweet_rtc_set(uint64_t unix_secs)
+ {
+ 	uint32_t raw, off;
+-	if (unix_secs < SR_T_MIN || unix_secs >= SR_T_MAX || sr_raw(&raw) != 0 || unix_secs < raw ||
+-	    sr_offset(&off) != 0) {
++	if (unix_secs < SR_T_MIN || unix_secs >= SR_T_MAX || sr_raw(&raw) != 0 || unix_secs < raw) {
+ 		return;
++	}
++	if (sr_offset(&off) != 0) {
++		/*
++		 * Patch 0262: dual boot. LineageOS arms this alarm (wake-ups, power-off alarms) and its alarm time
++		 * replaces the offset, so iOS started in 1970 and then could not store the time it was given. iOS is
++		 * running now: disarm the other OS's alarm (it re-arms its own on its next boot) and take the registers.
++		 */
++		uint8_t actl = 0;
++		if (sweet_spmi_read(0, SR_ALARM_CTRL, &actl) != 0 || !(actl & SR_EN)) {
++			printf("SWEET RTC: alarm control unreadable; offset not stored\n");
++			return;
++		}
++		uint8_t off_ctl = (uint8_t)(actl & ~SR_EN);
++		bool ok = sweet_spmi_write(0, SR_ALARM_CTRL, &off_ctl, 1) == 0 && sr_offset(&off) == 0;
++		printf("SWEET RTC: alarm armed by another OS (ctrl %#x) -> disarmed%s\n", actl, ok ? "" : " FAILED");
++		if (!ok) {
++			return;
++		}
++		off = ~0u; /* the data registers hold that alarm's time: always rewrite */
+ 	}
+ 	uint32_t want = (uint32_t)(unix_secs - raw);
+ 	if ((off > want ? off - want : want - off) <= 2) {
+@@ -482,4 +506,26 @@
+ 	    sr_read32(SR_ALARM_DATA, &back) == 0 && back == want;
+ 	printf("SWEET RTC: offset %u -> %u (raw %u, time %llu)%s\n", off, want, raw, unix_secs, ok ? "" : " FAILED");
+ }
++
++/*
++ * Patch 0262: kern.sweet_rtc_raw, read-only: the raw RTC seconds, for /usr/local/bin/sweetclock. That helper keeps
++ * a second copy of the offset on the iOS volume and restores the time when another OS has taken the alarm
++ * registers between two iOS boots (settimeofday then stores the offset here again through setGMTTimeOfDay).
++ */
++static int
++sr_raw_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int arg2, struct sysctl_req *req)
++{
++	uint32_t raw = 0;
++	if (req->newptr) {
++		return EPERM;
++	}
++	if (sr_raw(&raw) != 0) {
++		return ENXIO;
++	}
++	uint64_t v = raw;
++	return SYSCTL_OUT(req, &v, sizeof(v));
++}
++
++SYSCTL_PROC(_kern, OID_AUTO, sweet_rtc_raw, CTLTYPE_QUAD | CTLFLAG_RD | CTLFLAG_LOCKED, 0, 0, sr_raw_sysctl, "Q",
++    "PM8998 RTC raw seconds (patch 0262)");
+ #endif /* ARM64_BOARD_CONFIG_SWEET */

@@ -1,0 +1,291 @@
+Mi 8 Pro touch: recover the ST FingerTip controller when it goes quiet (held SDA bus clear, scan mode re-sent while idle, full re-init on the power key and on an IRQ/FIFO disagreement) and count its events so the cause shows in the log.
+
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -413,14 +413,57 @@
+ 	}
+ 	return false;
+ }
++
++/*
++ * Mi 8 Pro (patch 0261): a slave left mid-byte holds SDA low. The bit-banged master never checks the line it
++ * drives high, so every later read "succeeds" with zeros: an empty event FIFO, no errors, dead touch.
++ * Bus clear (I2C spec 3.1.16): clock SCL until the slave lets SDA go (at most 9 pulses), then START + STOP.
++ */
++static unsigned bb_clears;
+ 
++static void
++bb_stop(void);
++
+ static bool
++bb_bus_clear(void)
++{
++	bb_line(tb->sda, true);
++	if (!bb_scl_high() || bb_get(tb->sda)) {
++		return false;
++	}
++	unsigned pulses = 0;
++	while (pulses < 9 && !bb_get(tb->sda)) {
++		bb_line(tb->scl, false);
++		delay(BB_HALF_US);
++		(void)bb_scl_high();
++		pulses++;
++	}
++	bb_stop(); /* SDA low while SCL is high (START), then released (STOP) */
++	bb_clears++;
++	static uint64_t last_log;
++	uint64_t now = mach_absolute_time(), minute;
++	nanoseconds_to_absolutetime(60ull * NSEC_PER_SEC, &minute);
++	if (last_log == 0 || now - last_log >= minute) {
++		printf("SWEET TOUCH: SDA held low by the slave; bus cleared after %u clocks (sda=%d, %u clears)\n",
++		    pulses, bb_get(tb->sda), bb_clears);
++		last_log = now;
++	}
++	return true;
++}
++
++static bool
+ bb_start(void)
+ {
+ 	bb_line(tb->sda, true);
+ 	if (!bb_scl_high()) {
+ 		return false;
+ 	}
++	if (tb == &touch_equuleus && !bb_get(tb->sda) && bb_bus_clear()) {
++		bb_line(tb->sda, true);
++		if (!bb_scl_high()) {
++			return false;
++		}
++	}
+ 	bb_line(tb->sda, false);
+ 	delay(BB_HALF_US);
+ 	bb_line(tb->scl, false);
+@@ -936,16 +979,52 @@
+ {
+ 	const uint8_t cmd[3] = {STFTS_SCAN_MODE, 0x00, 0x01}; /* active scan, multi-touch */
+ 	return bb_xfer(STFTS_ADDR, cmd, sizeof(cmd), NULL, 0);
++}
++
++/*
++ * Patch 0261: the controller stopped reporting after hours of use (bus answered, FIFO always empty). Counters
++ * for the cause, and the recovery state the touch thread acts on (stfts_watchdog).
++ */
++#define STFTS_EVT_STATUS 0x43u
++#define STFTS_EVT_ERROR  0xf3u
++static struct {
++	uint64_t last_event;          /* mach time of the last non-empty event */
++	uint64_t last_kick, last_reinit, last_stats;
++	unsigned ready, enter, motion, leave, status, error, other;
++	unsigned empty_irq;           /* consecutive passes: IRQ low but the FIFO read empty */
++	unsigned kicks, reinits;
++	uint8_t last_error[STFTS_EVT_BYTES];
++	volatile bool wake_req;       /* power key pressed (sweet_keys.c) */
++	volatile bool reinit_req;
++} sf;
++
++static uint64_t
++stfts_secs(unsigned s)
++{
++	uint64_t t;
++	nanoseconds_to_absolutetime((uint64_t)s * NSEC_PER_SEC, &t);
++	return t;
+ }
+ 
++/* Power key down (sweet_keys.c thread): the touch thread checks the controller before the user reaches for it. */
++void sweet_touch_wake(void);
++void
++sweet_touch_wake(void)
++{
++	sf.wake_req = true;
++}
++
+ static int
+-touch_st_fts(void)
++touch_st_fts(bool irq_pending)
+ {
+ 	int x[TOUCH_MAX], y[TOUCH_MAX];
+ 	uint32_t mask = st.active;
+ 	bool changed = false;
+ 	memcpy(x, st.x, sizeof(x));
+ 	memcpy(y, st.y, sizeof(y));
++	if (!irq_pending) {
++		sf.empty_irq = 0;
++	}
+ 	for (unsigned i = 0; i < STFTS_FIFO_DEPTH; ++i) {
+ 		uint8_t e[STFTS_EVT_BYTES];
+ 		int err = touch_read(STFTS_ADDR, STFTS_READ_EVENT, false, e, sizeof(e));
+@@ -953,8 +1032,32 @@
+ 			return err;
+ 		}
+ 		if (e[0] == 0) {
++			if (i == 0 && irq_pending) {
++				/* ~2 s of a low IRQ line over an empty FIFO: the two sides disagree, reset the controller */
++				if (++sf.empty_irq == 1000u) {
++					sf.reinit_req = true;
++				}
++			}
+ 			break;
+ 		}
++		sf.empty_irq = 0;
++		sf.last_event = mach_absolute_time();
++		switch (e[0]) {
++		case STFTS_EVT_READY: sf.ready++; break;
++		case STFTS_EVT_ENTER: sf.enter++; break;
++		case STFTS_EVT_MOTION: sf.motion++; break;
++		case STFTS_EVT_LEAVE: sf.leave++; break;
++		case STFTS_EVT_STATUS: sf.status++; break;
++		case STFTS_EVT_ERROR:
++			sf.error++;
++			memcpy(sf.last_error, e, sizeof(e));
++			if (sf.error <= 5u || (sf.error % 100u) == 0) {
++				printf("SWEET TOUCH: ST FTS error event %02x %02x %02x %02x %02x %02x %02x %02x (#%u)\n",
++				    e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7], sf.error);
++			}
++			break;
++		default: sf.other++; break;
++		}
+ 		if (e[0] == STFTS_EVT_READY) {
+ 			/* The controller reset itself: sensing is off and its contacts are gone. */
+ 			printf("SWEET TOUCH: ST FTS reset itself; restarting the scan\n");
+@@ -1053,7 +1156,102 @@
+ 		return false;
+ 	}
+ 	st.kind = TOUCH_ST_FTS;
++	sf.last_event = sf.last_kick = sf.last_stats = mach_absolute_time();
+ 	return true;
++}
++
++/*
++ * Patch 0261: what the controller looks like when touch has gone quiet. Chip ID through the FTM5 hardware
++ * register read (0xfa + 32-bit address 0x20000000, one dummy byte, then 0x36 0x39), the bus lines and the counters.
++ */
++static void
++stfts_report(const char *why)
++{
++	const uint8_t cmd[5] = {0xfa, 0x20, 0x00, 0x00, 0x00};
++	uint8_t id[3] = {0, 0, 0};
++	int err = bb_xfer(STFTS_ADDR, cmd, sizeof(cmd), id, sizeof(id));
++	uint64_t idle = (mach_absolute_time() - sf.last_event) / stfts_secs(1);
++	printf("SWEET TOUCH: ST FTS %s: id err=%d %02x %02x %02x sda=%d scl=%d irq=%d idle=%llus active=%#x "
++	    "ev ready=%u enter=%u motion=%u leave=%u status=%u error=%u other=%u kicks=%u reinits=%u clears=%u "
++	    "last-error=%02x %02x %02x %02x\n",
++	    why, err, id[0], id[1], id[2], bb_get(tb->sda), bb_get(tb->scl),
++	    (int)(touch_rd(st.gpio, TOUCH_GPIO_IO(tb->irq)) & 1u), idle, st.active,
++	    sf.ready, sf.enter, sf.motion, sf.leave, sf.status, sf.error, sf.other, sf.kicks, sf.reinits, bb_clears,
++	    sf.last_error[0], sf.last_error[1], sf.last_error[2], sf.last_error[3]);
++}
++
++/* Patch 0261: rail vote, bus clear, reset pulse, wait for READY, scan on. Contacts are released first. */
++static void
++stfts_reinit(const char *why)
++{
++	uint8_t e[STFTS_EVT_BYTES] = {0};
++	int err = 0;
++	sf.reinits++;
++	sf.last_reinit = mach_absolute_time();
++	stfts_report(why);
++	if (st.active) {
++		touch_report(0, st.x, st.y);
++	}
++	int rail = sweet_rpmh_vreg_enable("ldoa28", 3300);
++	(void)bb_bus_clear();
++	touch_gpio(tb->rst, 0, 3, 7, true, false);
++	touch_wait(10);
++	touch_gpio(tb->rst, 0, 3, 7, true, true);
++	touch_wait(200);
++	bool ready = false;
++	for (unsigned i = 0; !ready && i < 100; ++i) {
++		err = touch_read(STFTS_ADDR, STFTS_READ_EVENT, false, e, sizeof(e));
++		ready = !err && e[0] == STFTS_EVT_READY;
++		if (!ready && (err || e[0] == 0)) {
++			touch_wait(10);
++		}
++	}
++	int scan = stfts_start_scan();
++	sf.empty_irq = 0;
++	sf.last_event = sf.last_kick = mach_absolute_time();
++	printf("SWEET TOUCH: ST FTS re-init (%s, #%u): rail=%d ready=%d err=%d scan=%d\n",
++	    why, sf.reinits, rail, ready, err, scan);
++}
++
++/*
++ * Patch 0261, once per touch-thread pass on the Mi 8 Pro:
++ *  - power key down and no event for 3 s: full re-init (the user is about to touch; a missed READY, a stopped
++ *    scan or a confused controller are all cleared by the reset);
++ *  - every 5 s without a finger down and without events: bus check (bb_start clears a held SDA) and scan mode
++ *    re-sent; harmless when it is already scanning;
++ *  - the IRQ/FIFO disagreement from touch_st_fts: full re-init, at most once every 30 s;
++ *  - every 30 minutes: one stats line.
++ */
++static void
++stfts_watchdog(void)
++{
++	uint64_t now = mach_absolute_time();
++	if (sf.wake_req) {
++		sf.wake_req = false;
++		if (!st.active && now - sf.last_event > stfts_secs(3)) {
++			stfts_reinit("power key");
++			return;
++		}
++	}
++	if (sf.reinit_req) {
++		sf.reinit_req = false;
++		if (sf.last_reinit == 0 || now - sf.last_reinit > stfts_secs(30)) {
++			stfts_reinit("IRQ low over an empty FIFO");
++			return;
++		}
++	}
++	if (!st.active && now - sf.last_event > stfts_secs(5) && now - sf.last_kick > stfts_secs(5)) {
++		sf.last_kick = now;
++		sf.kicks++;
++		int err = stfts_start_scan();
++		if (err && (sf.kicks % 60u) == 1u) {
++			printf("SWEET TOUCH: ST FTS scan re-send err=%d\n", err);
++		}
++	}
++	if (now - sf.last_stats > stfts_secs(1800)) {
++		sf.last_stats = now;
++		stfts_report("stats");
++	}
+ }
+ 
+ static bool
+@@ -1302,7 +1500,7 @@
+ 			int err = st.kind == TOUCH_GOODIX ? touch_goodix() :
+ 			    st.kind == TOUCH_NVT ? touch_novatek() :
+ 			    st.kind == TOUCH_FT8719 ? touch_ft8719() :
+-			    st.kind == TOUCH_ST_FTS ? touch_st_fts() : touch_focaltech();
++			    st.kind == TOUCH_ST_FTS ? touch_st_fts(pending) : touch_focaltech();
+ 			if (err) {
+ 				/* At most one line a minute: bad frames are frequent and harmless */
+ 				static uint64_t last_log;
+@@ -1325,6 +1523,9 @@
+ 				errors = 0;
+ 			}
+ 		}
++		if (st.kind == TOUCH_ST_FTS) {
++			stfts_watchdog();
++		}
+ 		touch_wait(touch_poll_ms);
+ 	}
+ 	touch_report(0, st.x, st.y);
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -18,6 +18,7 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern void sweet_hid_key(int key, int down);
++extern void sweet_touch_wake(void); /* patch 0261: Mi 8 Pro touch re-check on the power key */
+ void sweet_keys_init(void);
+ 
+ #define KEYS_CORE_PA     0x0c440000u
+@@ -122,6 +123,9 @@
+ 				printf("SWEET KEYS: key=%d down=%d pon=%#x gpio=%#x\n",
+ 				    k, state[k], pon, gpio);
+ 				sweet_hid_key(k, state[k]);
++				if (k == 0 && state[k]) {
++					sweet_touch_wake();
++				}
+ 			}
+ 		}
+ 		keys_wait();
