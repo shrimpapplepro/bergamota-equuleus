@@ -4,7 +4,7 @@
 
 ### >>> Mi 8 Pro (equuleus) fork, 2026-11-11: iOS 26 BOOTS to the home screen (boot26-1, `fastboot boot`) <<<
 First boot of `enxerto/out/equuleus-boot26-1.img` (kernel `xnu/out-12377-1203`, root on `ios_root`), observed over SSH,
-the UDP kernel log and `sweetshot`; the user's own touch/brightness check is still open.
+the UDP kernel log and `sweetshot`. **User-confirmed on the phone: touch works, the brightness slider works.**
 * **Works (observed):** root mounts from `ios_root`; USB network 4 s after `fastboot boot`, SSH; SpringBoard, lock
   screen and home screen (828x1792 canvas, copy scan-out, 30 Hz); ST touch probes ("ST FTS ready=1", no stall line);
   `sweetbright daemon` follows backboardd ("request 262 applied 262", DCS 0x51 sent); the first-boot job registered
@@ -19,12 +19,26 @@ the UDP kernel log and `sweetshot`; the user's own touch/brightness check is sti
   and 3 errors (a byte replaced by 0x00/0x01 = the key state); the kernel stored the RTC offset from raw 24434 instead
   of 3497843; the key side logged phantom volume presses with `gpio=0x6` / `gpio=0x60` (RTC bytes). The keys now take
   the `sweet_spmi.c` lock. Same code in the iOS 18 series, so image 10 on `recovery` has it too (rebuild later).
-  Kernel run 42851760659 (26.5). NOT verified on the phone yet: repeat the 300-read test on the new kernel.
+  Kernel run 42851760659 (26.5) succeeded -> `xnu/out-12377-1204/` (SHA256SUMS OK, `errors.txt` empty, has
+  `sweet_spmi_bus_take`). NOT verified on the phone yet: repeat the 300-read test on the new kernel. The iOS 18
+  kernel with 0264 is not built (the 26.5 dispatch cancelled the push run; dispatch `-f macos_version=15.3` later).
+* **BUG, open: backboardd aborts now and then (respring), seen twice while the user scrolled in Settings:**
+  `Assertion failed: (found != slist->end()), function push_surface, file ogl-context.cpp, line 1186` (QuartzCore,
+  thread `com.apple.coreanimation.display.primary`, deep layer recursion). This is CoreAnimation's OpenGL fallback
+  renderer: the root has no Chlorophyll (`RENEGADE_NO_BGMTL=1`). It recovers by itself. 50 synthetic swipes in
+  Settings did not reproduce it. Mitigation set, effect unknown: `sweetprefs mobile com.apple.Accessibility
+  EnhancedBackgroundContrastEnabled bool true` and `ReduceMotionEnabled bool true` (fewer backdrop/offscreen
+  surfaces). Real fix: build Chlorophyll's `ios26` branch for this root (after Wi-Fi).
 * **Open:** speech extensions (MauiAUSP, MacinTalkAUSP, SiriAUSP, KonaSynthesizer) abort in `EXExtensionMain` about
   130 times in the first minutes, then stop (ReportCrash stays busy for a while); several daemons die on the 6 MB
   memory high watermark (intents_helper, gamepolicyd); bluetoothd crashes (no Bluetooth). None blocks the UI.
-* **Next:** boot26-2 (new kernel + `sweetfb_direct=1 sweetfb_scancopy=2 sweetfb_zcforce=1`), then Wi-Fi:
-  `sweet80211=2` with the wlan ADT, then `sweetwlan=5 sweet80211=3 sweetwlandelay=60` with the user watching.
+* **Next, built, NOT booted (needs the user's go):** `enxerto/out/equuleus-boot26-2-direct.img` = kernel 1204 +
+  `equuleus-n104-2x-gpu-wlan.adt` + boot26-1's args + `sweetfb_direct=1 sweetfb_scancopy=2 sweetfb_zcforce=1
+  sweet80211=2` (522 of 607 bytes). Fallback if the direct display path misbehaves on iOS 26:
+  `equuleus-boot26-2-copy.img` (same, without the three `sweetfb_` args, 468 bytes). Checks on that boot: the
+  300-read RTC test (expect 0 bad, no phantom `SWEET KEYS: key=1`), display mode/stats, the clock kept, Settings ›
+  Wi-Fi lists "Bergamota-test" (`sweetwifi info` / `scan`). Then the real Wi-Fi boot:
+  `sweetwlan=5 sweet80211=3 sweetwlandelay=60`, only with the user watching.
 
 ### >>> Mi 8 Pro (equuleus) fork, 2026-11-10: iOS 26 root on `ios_root` (preparation; first boot is the section above) <<<
 Goal: Wi-Fi, which upstream only has on iOS 26 (docs/WIFI_IOS26.md, WPA2 join on boot 54). iOS 18 stays as the fallback.
