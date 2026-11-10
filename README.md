@@ -14,7 +14,7 @@ Tested on one phone, 8 GB / 128 GB, with iOS 18.7.8 (22H352).
 | Feature | Notes |
 | --- | --- |
 | Boot to the home screen | iPhone interface, about 2 minutes |
-| Touch | ST FingerTip over bit-banged I2C |
+| Touch | ST FingerTip over bit-banged I2C. It once stopped after hours of use: since patch 0261 the power key re-initialises the controller, and the driver clears a stuck bus and logs its event counts |
 | Power and volume buttons | Screen sleep and wake work too |
 | Stock apps | Notes, Maps, Calendar, Mail, Reminders and others appear on the home screen; some were opened, not all are tested |
 | GPU (Adreno 630) | Its signed firmware loads, and the compositor and wallpaper run on the GPU through Chlorophyll |
@@ -22,7 +22,7 @@ Tested on one phone, 8 GB / 128 GB, with iOS 18.7.8 (22H352).
 | Display | Page flipping, hardware scaler and zero-copy scan-out on this command-mode panel |
 | Frame rate | Peaks of about 50 updates per second. Not locked: frame drops remain |
 | Stability | About 7 hours up with 60,861 GPU jobs, 0 timeouts, 0 GPU recoveries |
-| Clock | Survives reboots after being set once |
+| Clock | Survives reboots after being set once. LineageOS takes the RTC alarm that holds the offset; patch 0262 and `sweetclock` (a second copy on the iOS volume) handle that, but the round trip through a LineageOS session is not tested yet |
 | Memory | 5.95 GB of the 8 GB |
 | USB | Network, SSH and a live kernel log |
 
@@ -55,6 +55,8 @@ Tested on one phone, 8 GB / 128 GB, with iOS 18.7.8 (22H352).
 ## What differs from the Poco F1
 
 - `xnu/patches-11215/0260-equuleus-st-fts-touch.patch`: ST FingerTip touch, its 1.8 V then 3.3 V power-up, and the L28 rail.
+- `xnu/patches-11215/0261-equuleus-touch-stall-recovery.patch`: touch recovery (bus clear, scan re-sent while idle, re-init on the power key) and event counters.
+- `xnu/patches-11215/0262-equuleus-rtc-dual-boot.patch` and `tools/sweetnet/sweetclock.c`: the wall clock across LineageOS sessions.
 - `xnu/patches-11215/0028-sweet-ufs-root-device.patch`: the root defaults to GPT name `ios_data`.
 - `enxerto/`: `BOARD=equuleus`, 1080x2248, and **bootloader flashing disabled**, because `userdata` and `boot` belong to LineageOS on this phone.
 - `tools/mkadt.py`: board `equuleus`, with the full contiguous memory window above 4 GiB.
