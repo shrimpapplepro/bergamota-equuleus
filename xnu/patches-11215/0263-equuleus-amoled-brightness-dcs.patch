@@ -1,0 +1,216 @@
+Mi 8 Pro brightness: the Samsung EA8074 AMOLED (command mode, DSI0) has no WLED; its level is DCS 0x51 with a 10-bit value. Send it through the DSI command DMA FIFO from the framebuffer's vsync tick, requested by sysctl kern.sweet_fb_brightness (2..1023), boot-arg sweetfb_bl=N, or the AppleARMBacklight service (sweetfb_blsvc=1). sweetfb_dcs=0 turns it off.
+
+--- a/bsd/dev/sweet_fb.c
++++ b/bsd/dev/sweet_fb.c
+@@ -64,6 +64,19 @@
+     "Poco F1 on-screen performance HUD (0 off, 1 on); needs the copy scan-out path");
+ 
+ /*
++ * sysctl kern.sweet_fb_brightness (patch 0263): Mi 8 Pro AMOLED brightness in panel units, 2..1023 (Samsung EA8074,
++ * DCS 0x51 with a 10-bit big-endian value, sent by the framebuffer over DSI0 on its next vsync tick). -1 = leave the
++ * level the bootloader set. The AppleARMBacklight service (sweetfb_blsvc=1) writes here too.
++ * kern.sweet_fb_brightness_applied: the last level the panel took, -1 none yet.
++ */
++int sweet_fb_brightness = -1;
++int sweet_fb_brightness_applied = -1;
++SYSCTL_INT(_kern, OID_AUTO, sweet_fb_brightness, CTLFLAG_RW | CTLFLAG_LOCKED, &sweet_fb_brightness, 0,
++    "Mi 8 Pro panel brightness request, 2..1023 (-1 = bootloader level)");
++SYSCTL_INT(_kern, OID_AUTO, sweet_fb_brightness_applied, CTLFLAG_RD | CTLFLAG_LOCKED, &sweet_fb_brightness_applied, 0,
++    "Mi 8 Pro panel brightness last sent, -1 none");
++
++/*
+  * sysctl kern.sweet_fb_shot (patch 0224): a screenshot of what the panel scans now, for testing over SSH
+  * (tools/sweetnet/sweetshot). Root only. 16-byte header, little endian: 'SHOT' (0x544f4853), width, height,
+  * bytes per row (width * 4); then BGRA rows. kern.sweet_fb_shot_scale (2..8, default 3) keeps every n-th pixel
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -49,6 +49,7 @@
+ extern "C" int sweet_smmu_probe_sid(unsigned sid, unsigned level); /* bsd/dev/sweet_smmu.c, read only */
+ extern "C" void sweet_fb_stats_publish(const char *text);       /* bsd/dev/sweet_fb.c: sysctl kern.sweet_fb */
+ extern "C" int sweet_fb_hud;
++extern "C" int sweet_fb_brightness, sweet_fb_brightness_applied;   /* bsd/dev/sweet_fb.c (patch 0263) */
+ extern "C" uint32_t sweet_gpu_fence_snapshot(void);     /* bsd/dev/sweet_a630.c (0229) */
+ extern "C" bool sweet_gpu_blit_window(uint64_t pa, uint64_t size);      /* bsd/dev/sweet_a630.c (0240) */
+ extern "C" uint32_t sweet_gpu_blit(uint64_t src_pa, uint32_t src_pitch, uint64_t dst_pa, uint32_t dst_pitch, uint32_t w, uint32_t h);
+@@ -477,7 +478,26 @@
+ 	/* 0243: brightness iOS asked for through AppleARMBacklight (0..4095), and the one written; applied on the vsync timer */
+ 	uint32_t      fBlReq, fBlReqApplied;
+ 	AppleARMBacklight *fBacklight;
+-	void          blRequest(uint32_t level) { __atomic_store_n(&fBlReq, level | 0x80000000u, __ATOMIC_RELEASE); }
++	void          blRequest(uint32_t level)
++	{
++		__atomic_store_n(&fBlReq, level | 0x80000000u, __ATOMIC_RELEASE);
++		if (fDcs) {     /* 0263: the AMOLED takes it over DSI instead (0..4095 -> 2..1023) */
++			int pl = (int)((level > 4095 ? 4095 : level) * 1023u / 4095u);
++			__atomic_store_n(&sweet_fb_brightness, pl < 2 ? 2 : pl, __ATOMIC_RELEASE);
++		}
++	}
++	/*
++	 * 0263: Mi 8 Pro AMOLED brightness. The panel (Samsung EA8074, command mode, DSI0) has no WLED: its level is
++	 * the DCS command 0x51 with a 10-bit value, so the WLED writes above changed nothing and the panel stayed at the
++	 * bootloader's level. dcsWrite sends one DCS long write through the DSI command DMA's FIFO (the downstream
++	 * kernel's TPG FIFO path: no memory buffer, no SMMU), between the MDP's frames.
++	 */
++	vm_offset_t   fDsi;
++	bool          fDcs;
++	unsigned      fDcsFails;
++	void          dcsInit(void);
++	bool          dcsWrite(const uint8_t *payload, unsigned n);
++	void          dcsTick(void);
+ 	void          blackout(void);
+ 	uintptr_t     fPixels;          /* kernel mapping of the panel memory */
+ 	IOMemoryMap  *fMap;
+@@ -659,6 +679,7 @@
+ 			IOLog("SWEET FB: sweetfb_hud=%d: performance HUD %s (sysctl kern.sweet_fb_hud)\n", hud, hud ? "on" : "off");
+ 		}
+ 	}
++	dcsInit();      /* 0263: Mi 8 Pro AMOLED brightness over DSI */
+ 	if (sweet_board_beryllium()) {
+ 		mdpProbe();
+ 		int flip = 0;
+@@ -1024,6 +1045,7 @@
+ 			fb->fBlReqApplied = req;
+ 		}
+ 	}
++	fb->dcsTick();                  /* 0263: AMOLED brightness request, if any */
+ 	sweet_hold_release(taken);      /* copied: CA may render into them again */
+ 	fb->statsTick(now);
+ 	fb->hudTick(now);
+@@ -1421,8 +1443,137 @@
+ 	uint32_t v = *(volatile uint32_t *)(base + off);
+ 	__asm__ volatile ("dmb oshld" ::: "memory");
+ 	return v;
++}
++
++/*
++ * 0263: DSI0 controller (SDM845 DSI 2.2, mdss_dsi_ctrl0@ae94000). Offsets as the downstream dsi_ctrl_reg.h; the
++ * command packing and the FIFO kickoff as dsi_ctrl.c (dsi_ctrl_copy_and_pad_cmd) and dsi_ctrl_hw_cmn.c
++ * (kickoff_fifo_command, reset_cmd_fifo) of the LineageOS sdm845 kernel.
++ */
++#define SWEET_DSI0_PA               0x0ae94000u
++#define SWEET_DSI_HW_VERSION        0x000u
++#define SWEET_DSI_CTRL              0x004u
++#define SWEET_DSI_STATUS            0x008u
++#define SWEET_DSI_CMD_DMA_CTRL      0x03cu
++#define SWEET_DSI_DMA_CMD_LENGTH    0x04cu
++#define SWEET_DSI_DMA_SW_TRIGGER    0x090u
++#define SWEET_DSI_INT_CTRL          0x110u
++#define SWEET_DSI_TPG_CTRL          0x15cu
++#define SWEET_DSI_TPG_DMA_INIT_VAL  0x17cu
++#define SWEET_DSI_TPG_FIFO_RESET    0x1ecu
++#define SWEET_DSI_INT_DMA_DONE      (1u << 0)
++#define SWEET_DSI_INT_ENABLES       0xa222aa02u /* the odd mask bits of INT_CTRL: kept as found, never changed */
++
++void
++AppleCLCD::dcsInit(void)
++{
++	int on = 1;
++	if (!sweet_board_is("xiaomi,equuleus")) {
++		return;
++	}
++	PE_parse_boot_argn("sweetfb_dcs", &on, sizeof(on));
++	if (!on) {
++		IOLog("SWEET FB: sweetfb_dcs=0: AMOLED brightness over DSI off\n");
++		return;
++	}
++	fDsi = ml_io_map(SWEET_DSI0_PA, 0x1000);
++	if (fDsi == 0) {
++		IOLog("SWEET FB: DSI0 mapping failed; brightness stays at the bootloader's level\n");
++		return;
++	}
++	uint32_t ver = mdp_rd(fDsi, SWEET_DSI_HW_VERSION), ctrl = mdp_rd(fDsi, SWEET_DSI_CTRL);
++	uint32_t status = mdp_rd(fDsi, SWEET_DSI_STATUS), ints = mdp_rd(fDsi, SWEET_DSI_INT_CTRL);
++	/* DSI_CTRL bit 0 = controller on, bit 2 = command mode engine on (the bootloader left the panel running) */
++	fDcs = (ctrl & 0x5u) == 0x5u;
++	IOLog("SWEET FB: DSI0 hw=%#x ctrl=%#x status=%#x int=%#x dma-ctrl=%#x -> AMOLED brightness %s "
++	    "(sysctl kern.sweet_fb_brightness, 2..1023)\n", ver, ctrl, status, ints, mdp_rd(fDsi, SWEET_DSI_CMD_DMA_CTRL),
++	    fDcs ? "over DCS 0x51" : "unavailable (command engine off)");
++	int lvl = -1;
++	if (fDcs && PE_parse_boot_argn("sweetfb_bl", &lvl, sizeof(lvl)) && lvl >= 2 && lvl <= 1023) {
++		__atomic_store_n(&sweet_fb_brightness, lvl, __ATOMIC_RELEASE);     /* sent on the first vsync tick */
++	}
+ }
+ 
++/* One DCS long write (data type 0x39), payload of at most 8 bytes, high-speed mode. Work loop only. */
++bool
++AppleCLCD::dcsWrite(const uint8_t *payload, unsigned n)
++{
++	uint8_t b[16];
++	uint32_t w[4];
++	if (!fDcs || n == 0 || n > 8) {
++		return false;
++	}
++	memset(b, 0xff, sizeof(b));
++	b[0] = (uint8_t)n;                      /* word count, low */
++	b[1] = 0;                               /* word count, high */
++	b[2] = 0x39;                            /* virtual channel 0, DCS long write */
++	b[3] = (1u << 7) | (1u << 6);           /* last command, long packet */
++	memcpy(b + 4, payload, n);
++	unsigned len = (4u + n + 3u) & ~3u;
++	memcpy(w, b, len);
++	mdp_wr(fDsi, SWEET_DSI_TPG_CTRL, (1u << 1) | (1u << 2) | (3u << 16));  /* CMD DMA TPG, FIFO mode, custom pattern */
++	for (unsigned i = 0; i < len / 4u; i++) {
++		mdp_wr(fDsi, SWEET_DSI_TPG_DMA_INIT_VAL, w[i]);
++	}
++	if ((len / 4u) & 1u) {
++		mdp_wr(fDsi, SWEET_DSI_TPG_DMA_INIT_VAL, 0);                   /* the FIFO wants an even dword count */
++	}
++	uint32_t dma = mdp_rd(fDsi, SWEET_DSI_CMD_DMA_CTRL);
++	dma &= ~((1u << 31) | (1u << 30) | (1u << 26));                        /* no broadcast, not master, HS */
++	dma |= 1u << 28;                                                         /* embedded mode */
++	mdp_wr(fDsi, SWEET_DSI_CMD_DMA_CTRL, dma);
++	mdp_wr(fDsi, SWEET_DSI_DMA_CMD_LENGTH, len);
++	uint32_t ints = mdp_rd(fDsi, SWEET_DSI_INT_CTRL);
++	mdp_wr(fDsi, SWEET_DSI_INT_CTRL, (ints & SWEET_DSI_INT_ENABLES) | SWEET_DSI_INT_DMA_DONE);   /* clear a stale done */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	mdp_wr(fDsi, SWEET_DSI_DMA_SW_TRIGGER, 1);
++	bool done = false;
++	for (unsigned us = 0; us < 50000; us += 20) {
++		if (mdp_rd(fDsi, SWEET_DSI_INT_CTRL) & SWEET_DSI_INT_DMA_DONE) {
++			done = true;
++			break;
++		}
++		IODelay(20);
++	}
++	ints = mdp_rd(fDsi, SWEET_DSI_INT_CTRL);
++	mdp_wr(fDsi, SWEET_DSI_INT_CTRL, (ints & SWEET_DSI_INT_ENABLES) | SWEET_DSI_INT_DMA_DONE);
++	mdp_wr(fDsi, SWEET_DSI_TPG_CTRL, 0);
++	mdp_wr(fDsi, SWEET_DSI_TPG_FIFO_RESET, 1);
++	IODelay(1);
++	mdp_wr(fDsi, SWEET_DSI_TPG_FIFO_RESET, 0);
++	if (!done) {
++		IOLog("SWEET FB: DCS %02x write timed out: status=%#x int=%#x\n", payload[0],
++		    mdp_rd(fDsi, SWEET_DSI_STATUS), ints);
++	}
++	return done;
++}
++
++/* Vsync tick (panel on): send a new brightness request. Five failures in a row turn the path off for this boot. */
++void
++AppleCLCD::dcsTick(void)
++{
++	if (!fDcs) {
++		return;
++	}
++	int want = __atomic_load_n(&sweet_fb_brightness, __ATOMIC_ACQUIRE);
++	if (want < 0 || want == __atomic_load_n(&sweet_fb_brightness_applied, __ATOMIC_RELAXED)) {
++		return;
++	}
++	int lvl = want < 2 ? 2 : want > 1023 ? 1023 : want;
++	const uint8_t cmd[3] = {0x51, (uint8_t)(lvl >> 8), (uint8_t)lvl};
++	if (dcsWrite(cmd, sizeof(cmd))) {
++		fDcsFails = 0;
++		__atomic_store_n(&sweet_fb_brightness_applied, want, __ATOMIC_RELEASE);
++		static unsigned logged;
++		if (logged++ < 20) {
++			IOLog("SWEET FB: AMOLED brightness %d sent (DCS 0x51 %02x %02x)\n", lvl, cmd[1], cmd[2]);
++		}
++	} else if (++fDcsFails >= 5) {
++		fDcs = false;
++		IOLog("SWEET FB: DCS brightness failed 5 times; off for this boot\n");
++	}
++}
++
+ /* Read-only: which pipe scans ABL's framebuffer, and the display path state. */
+ void
+ AppleCLCD::mdpProbe(void)
