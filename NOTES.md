@@ -32,13 +32,27 @@ the UDP kernel log and `sweetshot`. **User-confirmed on the phone: touch works, 
 * **Open:** speech extensions (MauiAUSP, MacinTalkAUSP, SiriAUSP, KonaSynthesizer) abort in `EXExtensionMain` about
   130 times in the first minutes, then stop (ReportCrash stays busy for a while); several daemons die on the 6 MB
   memory high watermark (intents_helper, gamepolicyd); bluetoothd crashes (no Bluetooth). None blocks the UI.
-* **Next, built, NOT booted (needs the user's go):** `enxerto/out/equuleus-boot26-2-direct.img` = kernel 1204 +
-  `equuleus-n104-2x-gpu-wlan.adt` + boot26-1's args + `sweetfb_direct=1 sweetfb_scancopy=2 sweetfb_zcforce=1
-  sweet80211=2` (522 of 607 bytes). Fallback if the direct display path misbehaves on iOS 26:
-  `equuleus-boot26-2-copy.img` (same, without the three `sweetfb_` args, 468 bytes). Checks on that boot: the
-  300-read RTC test (expect 0 bad, no phantom `SWEET KEYS: key=1`), display mode/stats, the clock kept, Settings ›
-  Wi-Fi lists "Bergamota-test" (`sweetwifi info` / `scan`). Then the real Wi-Fi boot:
-  `sweetwlan=5 sweet80211=3 sweetwlandelay=60`, only with the user watching.
+* **boot26-2 (2026-11-11 01:08 CST, user go): `enxerto/out/equuleus-boot26-2-direct.img`** (sha256 `0eabeff4...`) =
+  kernel 1204 + `equuleus-n104-2x-gpu-wlan.adt` + boot26-1's args + `sweetfb_direct=1 sweetfb_scancopy=2
+  sweetfb_zcforce=1 sweet80211=2` (522 of 607 bytes). Observed:
+  * **PMIC race fixed (1204 verified):** 301 `sweetclock show` reads, all valid and monotonic (was 6 wrong + 3 errors
+    of 300); no phantom volume-key lines. The clock survived the reboot (stored offset 1790828843, time right).
+  * **Direct display works on iOS 26:** `mode=direct hz=59 hw=1 flip=1`, zero-copy frames (zc ~= swaps, 2 copy
+    frames at start), hardware scaler 828x1792 -> 1038x2248 at 21,0. No panic. SSH 45 s after `fastboot boot`.
+  * **Wi-Fi iOS half works:** `en0` exists, wifid runs, `sweetwifi info` (power 1, country BR) and `sweetwifi scan`
+    (1 result, "Bergamota-test", ch 6) work, **Settings › Wi-Fi lists "Bergamota-test"** (the user opened it; a
+    join attempt fails as designed: `set type 20 -> 6`). `sweetwifi` was not on the root: copied by hand to
+    `/usr/local/bin`; `root_tweaks18.py` now installs it for new roots.
+  * `equuleus-boot26-2-copy.img` (no `sweetfb_` args) was the display fallback; not needed.
+* **Board check for the real Wi-Fi boot (Mi 8 Pro live DT vs the beryllium constants in 1106-1127): same.**
+  `wlan_fw_region` 0x8e300000+1 MiB, `modem_region` 0x8e400000+120 MiB, `mba_region` 0x96900000+2 MiB; icnss rails
+  L5A/L7A/L17A/L25A; partitions are found by name (`modem`, `fsg`, `fsc`, `modemst1/2`, read-only); the rmtfs
+  buffer 0xf6301000 is low-bank RAM that xnu does not use (phys_base 0x100000000) and outside the zero-copy low
+  pool (0xb0400000 + 252 MiB). Not checked: that this phone's `modem` partition has `image/bdwlan.*` and
+  `image/wlanmdsp.mbn` (the service reports a missing file and stops).
+* **Next:** the real Wi-Fi boot `sweetwlan=5 sweet80211=3 sweetwlandelay=60` (drop `sweet80211=2`), only with the
+  user watching; expect `SWEET WLAN svc:` status lines every 60 s and real networks in Settings (upstream: 2.4 GHz
+  WPA2-PSK joins, 5 GHz join failed).
 
 ### >>> Mi 8 Pro (equuleus) fork, 2026-11-10: iOS 26 root on `ios_root` (preparation; first boot is the section above) <<<
 Goal: Wi-Fi, which upstream only has on iOS 26 (docs/WIFI_IOS26.md, WPA2 join on boot 54). iOS 18 stays as the fallback.

@@ -1364,8 +1364,9 @@ def sweetprefs_tool(root):
         return
     install_file(src, os.path.join(root, 'usr/local/bin/sweetprefs'))
     print('sweetprefs: /usr/local/bin/sweetprefs installed')
-    # remote testing over SSH (tools/sweetnet/sweetshot.m, sweettouch.c): screenshot of the scanned frame, synthetic touch/buttons
-    for n in ('sweetshot', 'sweettouch'):
+    # remote testing over SSH (tools/sweetnet/sweetshot.m, sweettouch.c): screenshot of the scanned frame, synthetic touch/buttons;
+    # sweetwifi (sweetwifi.c): Apple80211 info/power/scan without wifid or the UI (docs/WIFI_IOS26.md)
+    for n in ('sweetshot', 'sweettouch', 'sweetwifi'):
         t = find_sweetnet('ios18/' + n)
         if t:
             install_file(t, os.path.join(root, 'usr/local/bin', n))
