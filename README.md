@@ -1,7 +1,7 @@
 # iOS 18 on the Xiaomi Mi 8 Pro (equuleus)
 
 A port of [Bergamota](https://github.com/ry-diffusion/Bergamota), which runs iOS on the Poco F1, to the Xiaomi Mi 8 Pro. Both phones use the Snapdragon 845 with the Adreno 630.
-Bergamota's code is used with its author's permission. All credit for the kernel, the bootloader, Renegade and Chlorophyll goes to that project and the ones it builds on.
+ All credit for the kernel, the bootloader, Renegade and Chlorophyll goes to that project and the ones it builds on.
 
 This is an experiment, not a usable phone OS. Apple's security model is mostly switched off, so do not put personal data on it.
 
