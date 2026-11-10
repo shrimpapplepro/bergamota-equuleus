@@ -50,9 +50,18 @@ the UDP kernel log and `sweetshot`. **User-confirmed on the phone: touch works, 
   buffer 0xf6301000 is low-bank RAM that xnu does not use (phys_base 0x100000000) and outside the zero-copy low
   pool (0xb0400000 + 252 MiB). Not checked: that this phone's `modem` partition has `image/bdwlan.*` and
   `image/wlanmdsp.mbn` (the service reports a missing file and stops).
-* **Next:** the real Wi-Fi boot `sweetwlan=5 sweet80211=3 sweetwlandelay=60` (drop `sweet80211=2`), only with the
-  user watching; expect `SWEET WLAN svc:` status lines every 60 s and real networks in Settings (upstream: 2.4 GHz
-  WPA2-PSK joins, 5 GHz join failed).
+* **boot26-3 (2026-11-11 01:17 CST, user go, user watching): REAL Wi-Fi scan works on the Mi 8 Pro.**
+  `enxerto/out/equuleus-boot26-3-wifi.img` (sha256 `51d02965...`) = boot26-2-direct with `sweet80211=2` replaced by
+  `sweetwlan=5 sweet80211=3 sweetwlandelay=60` (552 of 607 bytes). No kernel change was needed. Observed in the
+  kernel log: `mba.mbn` 238304 bytes, MBA ALIVE (PBL 67 ms), `modem.mdt` 30 program headers, MPSS AUTHENTICATED and
+  READY, rmtfs opens `modemst1/2`, `fsg`, `fsc` (reads only; `modem_fsg_oem_1/2` rejected), `wlanmdsp.mbn` 3645892
+  bytes over TFTP, WLFW up, firmware `WLAN.HL.2.0.c3-00534-QCAHLSWMTPLZ-1` (2019-12-18), board id 0xff ->
+  `bdwlan.bin` 26328 bytes, FW READY, HTC/WMI up (2 rf chains, regdomain 0x809c), HTT 3.73, first passive scan: 6
+  BSS on 2.4 and 5 GHz. `sweetwifi scan` returns real networks and **Settings › Wi-Fi lists them** with lock icons.
+  WMI READY reports MAC 00:00:00:00:00:00 (the firmware has none); `en0` uses the stand-in's local address
+  02:00:5e:... Not tested yet: joining (upstream: 2.4 GHz WPA2-PSK works, 5 GHz join failed), DHCP, a long run.
+* **Next:** the user joins a 2.4 GHz WPA2 network in Settings; then check `ifconfig en0`, the route and a ping;
+  read the `SWEET WLAN svc:` status lines after 10 minutes.
 
 ### >>> Mi 8 Pro (equuleus) fork, 2026-11-10: iOS 26 root on `ios_root` (preparation; first boot is the section above) <<<
 Goal: Wi-Fi, which upstream only has on iOS 26 (docs/WIFI_IOS26.md, WPA2 join on boot 54). iOS 18 stays as the fallback.
