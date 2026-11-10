@@ -23,6 +23,7 @@ Tested on one phone, 8 GB / 128 GB, with iOS 18.7.8 (22H352).
 | Frame rate | Peaks of about 50 updates per second. Not locked: frame drops remain |
 | Stability | About 7 hours up with 60,861 GPU jobs, 0 timeouts, 0 GPU recoveries |
 | Clock | Survives reboots after being set once. LineageOS takes the RTC alarm that holds the offset; patch 0262 and `sweetclock` (a second copy on the iOS volume) handle that, but the round trip through a LineageOS session is not tested yet |
+| Brightness | The Settings slider sets the AMOLED level: `sweetbright` passes backboardd's level to the kernel, which sends DCS 0x51 over DSI (patch 0263). The Control Center slider only shows the level and cannot be dragged |
 | Memory | 5.95 GB of the 8 GB |
 | USB | Network, SSH and a live kernel log |
 
@@ -30,7 +31,7 @@ Tested on one phone, 8 GB / 128 GB, with iOS 18.7.8 (22H352).
 
 | Feature | State |
 | --- | --- |
-| Dual boot | LineageOS on `boot` and iOS on `recovery` (Power + Vol Up). The image is written and verified, but starting it this way has not been tested yet |
+| Dual boot | LineageOS on `boot` (default) and iOS on `recovery` (Power + Vol Up). Starting iOS without the Mac worked once; the current image (touch, clock and brightness fixes) is written and verified but has not been started this way yet |
 | Charging | The driver runs, capped at 1500 mA, and has reported `TAPER`. A full drain and recharge has not been tested |
 | Speed | Smoother than software drawing, but still slow at times. CPU time in `backboardd` and SpringBoard is the current limit |
 
@@ -44,7 +45,6 @@ Tested on one phone, 8 GB / 128 GB, with iOS 18.7.8 (22H352).
 | Safari | Crashes at launch. `webbookmarksd` gets an empty path from `_SFSafariIconImageCacheDirectoryPath`, and Safari very likely hits the same error |
 | Widgets | Show "Waiting..." |
 | Settings, time zone screen | Froze once. The time zone was set over SSH instead |
-| Brightness slider | Not working in Bergamota on iOS 18; not tested here |
 
 ### Known visual issues
 
@@ -57,6 +57,7 @@ Tested on one phone, 8 GB / 128 GB, with iOS 18.7.8 (22H352).
 - `xnu/patches-11215/0260-equuleus-st-fts-touch.patch`: ST FingerTip touch, its 1.8 V then 3.3 V power-up, and the L28 rail.
 - `xnu/patches-11215/0261-equuleus-touch-stall-recovery.patch`: touch recovery (bus clear, scan re-sent while idle, re-init on the power key) and event counters.
 - `xnu/patches-11215/0262-equuleus-rtc-dual-boot.patch` and `tools/sweetnet/sweetclock.c`: the wall clock across LineageOS sessions.
+- `xnu/patches-11215/0263-equuleus-amoled-brightness-dcs.patch` and `tools/sweetnet/sweetbright.c`: brightness for the Samsung EA8074 AMOLED, which has no WLED.
 - `xnu/patches-11215/0028-sweet-ufs-root-device.patch`: the root defaults to GPT name `ios_data`.
 - `enxerto/`: `BOARD=equuleus`, 1080x2248, and **bootloader flashing disabled**, because `userdata` and `boot` belong to LineageOS on this phone.
 - `tools/mkadt.py`: board `equuleus`, with the full contiguous memory window above 4 GiB.
