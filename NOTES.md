@@ -2,7 +2,31 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-10: iOS 26 root on `ios_root`, first boot NOT run yet <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11: iOS 26 BOOTS to the home screen (boot26-1, `fastboot boot`) <<<
+First boot of `enxerto/out/equuleus-boot26-1.img` (kernel `xnu/out-12377-1203`, root on `ios_root`), observed over SSH,
+the UDP kernel log and `sweetshot`; the user's own touch/brightness check is still open.
+* **Works (observed):** root mounts from `ios_root`; USB network 4 s after `fastboot boot`, SSH; SpringBoard, lock
+  screen and home screen (828x1792 canvas, copy scan-out, 30 Hz); ST touch probes ("ST FTS ready=1", no stall line);
+  `sweetbright daemon` follows backboardd ("request 262 applied 262", DCS 0x51 sent); the first-boot job registered
+  the apps and set the Collections wallpaper (it waits at `launch com.sweet.run -> 3` until the phone is unlocked
+  once, then finishes: PosterBoard with `sweetpb26.dylib` creates the poster, so `sweetlegacywall` was not needed);
+  `sweettouch` and `sweetshot` work (points 414x896).
+* **Clock on a new root:** no `/private/var/db/sweetclock` yet, so the first boot is 1970. Set once from the Mac
+  (`ssh ... "date @$(date +%s)"`, then `sweetclock`); the offset is stored on the volume and in the PMIC. The root
+  ships `localtime -> US/Pacific`; set to Asia/Taipei by hand on the phone (the builder should take a zone).
+* **BUG found, fix in CI (f902d95: 1204 / 0264):** the key poll (`sweet_keys.c`, 20 ms, own mapping, no lock) and
+  `sweet_spmi.c` ran PMIC observer reads at the same time and got each other's byte. 300 raw RTC reads: 6 wrong values
+  and 3 errors (a byte replaced by 0x00/0x01 = the key state); the kernel stored the RTC offset from raw 24434 instead
+  of 3497843; the key side logged phantom volume presses with `gpio=0x6` / `gpio=0x60` (RTC bytes). The keys now take
+  the `sweet_spmi.c` lock. Same code in the iOS 18 series, so image 10 on `recovery` has it too (rebuild later).
+  Kernel run 42851760659 (26.5). NOT verified on the phone yet: repeat the 300-read test on the new kernel.
+* **Open:** speech extensions (MauiAUSP, MacinTalkAUSP, SiriAUSP, KonaSynthesizer) abort in `EXExtensionMain` about
+  130 times in the first minutes, then stop (ReportCrash stays busy for a while); several daemons die on the 6 MB
+  memory high watermark (intents_helper, gamepolicyd); bluetoothd crashes (no Bluetooth). None blocks the UI.
+* **Next:** boot26-2 (new kernel + `sweetfb_direct=1 sweetfb_scancopy=2 sweetfb_zcforce=1`), then Wi-Fi:
+  `sweet80211=2` with the wlan ADT, then `sweetwlan=5 sweet80211=3 sweetwlandelay=60` with the user watching.
+
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-10: iOS 26 root on `ios_root` (preparation; first boot is the section above) <<<
 Goal: Wi-Fi, which upstream only has on iOS 26 (docs/WIFI_IOS26.md, WPA2 join on boot 54). iOS 18 stays as the fallback.
 * **Partitions:** `boot` = LineageOS (default), `recovery` = iOS 18 image 10 (Power + Vol Up), `ios_data` = iOS 18 root,
   `ios_root` = **iOS 26.6.2 root** (written by dd from LineageOS and read back: sha256 equal to the Mac image, 31 GiB),
@@ -25,8 +49,6 @@ Goal: Wi-Fi, which upstream only has on iOS 26 (docs/WIFI_IOS26.md, WPA2 join on
   sweetwlandelay=60` with the wlan ADT. The driver reads `modem`, `fsg`, `fsc`, `modemst1/2` by name and this phone has
   all of them with the same firmware file names; LineageOS reports WLAN board id 0, so expect `bdwlan.b00` or the
   `bdwlan.bin` fallback. Nothing writes those partitions.
-* **Untested:** everything above on the phone. Whether ST touch, the command-mode panel and DCS brightness behave on
-  xnu-12377 as on 11215 is a guess from identical patches.
 
 ### >>> 2026-10-26: Wi-Fi, PAC fallback and Chlorophyll-on-Turnip merged into develop (user) <<<
 * Wi-Fi `claude/wlan26-chip-037a03` was already develop (f4b36c1, boot 54 WPA2 join). Merged `claude/peaceful-saha-28595a` (xnu-12377 1019 PAC emulation, tools/pacemu) and `claude/chlorophyll-turnip-c432e2` (freedreno-sweet syncobjs + prime fds, sweetgpu, notes; NOTES conflict: both sections kept below).
