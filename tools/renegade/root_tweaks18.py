@@ -840,16 +840,18 @@ def entitlements_of(path):
     return plistlib.loads(out) if out else None
 
 
+SWEETPB26_PATH = '/usr/local/lib/sweetpb26.dylib'
+
+
 def posterboard(root):
     """PosterBoard fix (live 2026-10-23): the HFS+ root has no data-protection classes, so PosterBoard's check of
     NSURLFileProtectionKey on its data store fails ("Failed to migrate to Version 61 from 59", no wallpaper store).
     sweetfp.dylib (tools/sweetnet/sweetfp.m: arm64e, pacstrip --sign) keeps the class in an xattr; it is linked into
     /Applications/PosterBoard.app/PosterBoard as an extra LC_LOAD_DYLIB (tools/sweetnet/addlc.py: dyld ignores
     DYLD_INSERT_LIBRARIES for platform binaries) and the binary is re-signed ad hoc, keeping its identifier, flags
-    and entitlements."""
-    import subprocess, tempfile
-    sys.path.insert(0, HERE)
-    import pacstrip
+    and entitlements.
+    ios26: sweetpb26.dylib as well (tools/sweetnet/sweetpb26.m: protected NSData writes, the APFS purgeable hint and the
+    empty StandBy role, each fatal to the iOS 26 data store on this root). Upstream linked it by hand on the phone."""
     binp = os.path.join(root, POSTER_BIN)
     if not os.path.exists(binp):
         print('posterboard: no', POSTER_BIN, 'in the image: skipped')
@@ -859,10 +861,25 @@ def posterboard(root):
         print('posterboard: sweetfp.dylib not built (tools/sweetnet/build.sh): skipped, PosterBoard left alone')
         note_skip('posterboard sweetfp', not_built() + '; PosterBoard left alone')
         return
-    install_file(dylib, os.path.join(root, SWEETFP_PATH.lstrip('/')), 0o755)    # first: the binary must never name a missing dylib
-    print('posterboard:', SWEETFP_PATH, 'installed')
-    if macho_has_dylib(binp, SWEETFP_PATH):
-        print('posterboard: PosterBoard already links', SWEETFP_PATH)
+    posterboard_link(root, binp, dylib, SWEETFP_PATH)
+    if TARGET['name'] == 'ios26':
+        dylib = find_sweetnet('ios18/sweetpb26.dylib')
+        if not dylib:
+            print('posterboard: sweetpb26.dylib not built (tools/sweetnet/build.sh): skipped')
+            note_skip('posterboard sweetpb26', not_built() + '; no poster can be created on iOS 26 without it')
+            return
+        posterboard_link(root, binp, dylib, SWEETPB26_PATH)
+
+
+def posterboard_link(root, binp, dylib, path):
+    """Install dylib at path in the image and make PosterBoard load it (no-op when it already does)."""
+    import subprocess, tempfile
+    sys.path.insert(0, HERE)
+    import pacstrip
+    install_file(dylib, os.path.join(root, path.lstrip('/')), 0o755)    # first: the binary must never name a missing dylib
+    print('posterboard:', path, 'installed')
+    if macho_has_dylib(binp, path):
+        print('posterboard: PosterBoard already links', path)
         return
     mode = os.stat(binp).st_mode & 0o7777
     tmpd = tempfile.mkdtemp(prefix='renegade-posterboard-')
@@ -871,16 +888,16 @@ def posterboard(root):
         shutil.copyfile(binp, tmp)
         os.chmod(tmp, 0o755)
         ents, ident = entitlements_of(tmp), pacstrip.cs_identity(tmp)
-        subprocess.run([sys.executable, '-I', ADDLC, tmp, SWEETFP_PATH], check=True)
+        subprocess.run([sys.executable, '-I', ADDLC, tmp, path], check=True)
         pacstrip.sign(tmp)
         if entitlements_of(tmp) != ents or pacstrip.cs_identity(tmp)[:2] != ident[:2]:
             sys.exit('posterboard: entitlements or identifier changed by the re-sign: PosterBoard left alone')
-        if not macho_has_dylib(tmp, SWEETFP_PATH):
+        if not macho_has_dylib(tmp, path):
             sys.exit('posterboard: LC_LOAD_DYLIB missing after addlc.py')
         install_file(tmp, binp, mode)
     finally:
         shutil.rmtree(tmpd, ignore_errors=True)
-    print('posterboard: PosterBoard links', SWEETFP_PATH, '(re-signed ad hoc as %s, %d entitlements kept)' % (
+    print('posterboard: PosterBoard links', path, '(re-signed ad hoc as %s, %d entitlements kept)' % (
         ident[0], len(ents or {})))
 
 

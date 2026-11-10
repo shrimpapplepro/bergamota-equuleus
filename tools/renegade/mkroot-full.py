@@ -423,6 +423,9 @@ def stage_tweaks(a, root):
         rt.netcfg(root)
         rt.sweetreboot(root)
         rt.ssh(root)
+        rt.sweetmetrics(root)       # the same three calls root_tweaks18.main() makes: a full build had left them out,
+        rt.sweetclock(root)         # so a fresh root had no dual-boot clock and no brightness job
+        rt.sweetbright(root)
         # Renegade auto-fixes, each with an opt-out (RENEGADE_NO_APPREG/POSTERBOARD/BLUETOOTH/JB, --no-* flags):
         # staged apps -> /Applications, bluetooth (BT_HCI_TRANSPORT, BlueTool stub, hcitest), PosterBoard + sweetfp.dylib,
         # first-boot job (sweetuicache registration, jailbreak post-install)
