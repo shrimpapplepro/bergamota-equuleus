@@ -2,7 +2,7 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-11: iOS 26 BOOTS to the home screen (boot26-1, `fastboot boot`) <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11: iOS 26 BOOTS to the home screen, Wi-Fi WORKS (boot26-3, `fastboot boot`) <<<
 First boot of `enxerto/out/equuleus-boot26-1.img` (kernel `xnu/out-12377-1203`, root on `ios_root`), observed over SSH,
 the UDP kernel log and `sweetshot`. **User-confirmed on the phone: touch works, the brightness slider works.**
 * **Works (observed):** root mounts from `ios_root`; USB network 4 s after `fastboot boot`, SSH; SpringBoard, lock
@@ -60,8 +60,15 @@ the UDP kernel log and `sweetshot`. **User-confirmed on the phone: touch works, 
   BSS on 2.4 and 5 GHz. `sweetwifi scan` returns real networks and **Settings › Wi-Fi lists them** with lock icons.
   WMI READY reports MAC 00:00:00:00:00:00 (the firmware has none); `en0` uses the stand-in's local address
   02:00:5e:... Not tested yet: joining (upstream: 2.4 GHz WPA2-PSK works, 5 GHz join failed), DHCP, a long run.
-* **Next:** the user joins a 2.4 GHz WPA2 network in Settings; then check `ifconfig en0`, the route and a ping;
-  read the `SWEET WLAN svc:` status lines after 10 minutes.
+* **Wi-Fi JOIN works (2026-11-11 01:20 CST, the user typed the password in Settings):** 2.4 GHz WPA2-PSK network on
+  2412 MHz: auth, assoc (status 0, HT, WMM), 4-way handshake, keys, CONNECTED 242 ms into the join. `en0` active
+  with a DHCP address, default route on `en0` (the `ue0` default is interface-scoped), `sweetwifi info` STATE 4.
+  Mac -> phone ping over Wi-Fi: 5/5, 3-9 ms. Phone -> internet: `nc captive.apple.com 80` returns Apple's
+  "Success" page (DNS + TCP). Service status at 120 s: WMI ECHO 1/1 answered (21 ms), modem up, rmtfs 3 reads /
+  1 write (RAM only). No `ping`/`curl` on the root (toybox has `nc`).
+* **Next:** a 10+ minute run (status lines, ECHOs), Safari/App traffic by the user, 5 GHz; then decide how iOS 26
+  becomes a boot option (it is `fastboot boot` only; `recovery` still holds iOS 18 image 10), and Chlorophyll
+  `ios26` for the backboardd crash.
 
 ### >>> Mi 8 Pro (equuleus) fork, 2026-11-10: iOS 26 root on `ios_root` (preparation; first boot is the section above) <<<
 Goal: Wi-Fi, which upstream only has on iOS 26 (docs/WIFI_IOS26.md, WPA2 join on boot 54). iOS 18 stays as the fallback.

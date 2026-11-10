@@ -1,11 +1,23 @@
-# iOS 18 on the Xiaomi Mi 8 Pro (equuleus)
+# iOS 18 and iOS 26 on the Xiaomi Mi 8 Pro (equuleus)
 
 A port of [Bergamota](https://github.com/ry-diffusion/Bergamota), which runs iOS on the Poco F1, to the Xiaomi Mi 8 Pro. Both phones use the Snapdragon 845 with the Adreno 630.
  All credit for the kernel, the bootloader, Renegade and Chlorophyll goes to that project and the ones it builds on.
 
 This is an experiment, not a usable phone OS. Apple's security model is mostly switched off, so do not put personal data on it.
 
-## Status
+## iOS 26 with Wi-Fi (2026-11-11, in progress)
+
+iOS 26.6.2 (23G90) boots to the home screen from its own partition (`ios_root`), started from the Mac with `fastboot boot`. It is not installed as a boot option yet; iOS 18 stays on `recovery`.
+
+| Feature | State |
+| --- | --- |
+| Boot, touch, buttons, brightness, clock | Work, as on iOS 18 |
+| Display | Direct zero-copy scan-out at 59 Hz |
+| Wi-Fi | **Works.** The modem and the WCN3990 firmware start from the phone's own partitions (read only). Settings lists real networks; a 2.4 GHz WPA2 network joined, got an address by DHCP and reached the internet. 5 GHz and long runs are not tested |
+| GPU compositor | Not yet: Chlorophyll is not built for this root, so CoreAnimation draws with its OpenGL fallback |
+| Known bug | `backboardd` can abort in that fallback renderer while scrolling (the screen restarts by itself) |
+
+## Status of iOS 18
 
 Tested on one phone, 8 GB / 128 GB, with iOS 18.7.8 (22H352).
 
@@ -39,7 +51,8 @@ Tested on one phone, 8 GB / 128 GB, with iOS 18.7.8 (22H352).
 
 | Feature | State |
 | --- | --- |
-| Wi-Fi, cellular | Not working |
+| Wi-Fi | Not on iOS 18. Works on the iOS 26 build above |
+| Cellular | Not working |
 | Bluetooth | Not enabled on this phone |
 | Sound, camera, sensors, Face ID | Not set up |
 | Safari | Crashes at launch. `webbookmarksd` gets an empty path from `_SFSafariIconImageCacheDirectoryPath`, and Safari very likely hits the same error |
