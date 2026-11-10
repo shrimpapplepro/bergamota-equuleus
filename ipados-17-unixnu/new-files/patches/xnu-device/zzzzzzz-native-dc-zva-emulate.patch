@@ -1,0 +1,52 @@
+Emulate DC ZVA on Device memory for user threads (equuleus).
+
+libsystem's __bzero clears with DC ZVA without looking at the memory type. On Device memory that instruction takes an alignment fault
+(reported as EXC_BAD_ACCESS, code 0x101), which killed backboardd in CA::OGL::SWContext::set_surface whenever a surface mapped as Device
+was cleared. The kernel zeroes the block with copyout and steps over the instruction. Any other alignment fault takes the original path.
+
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1530,6 +1530,34 @@
+ 
+ 	exception_triage(exc, codes, numcodes);
+ 	__builtin_unreachable();
++}
++
++/*
++ * DC ZVA on Device memory is an alignment fault, unlike on the Apple parts this userland expects, and libsystem's __bzero uses it without
++ * checking the memory type. Do the zeroing here and step over the instruction. Boot log: native_zva_emulated (FT7 row).
++ */
++volatile uint32_t native_zva_emulated = 0;
++static bool
++native_emulate_dc_zva(arm_saved_state_t *state)
++{
++	static const uint64_t zeros[32] = { 0 };
++	uint32_t instr = 0;
++	if (!is_saved_state64(state) || copyin(get_saved_state_pc(state), (char *)&instr, sizeof(instr)) != 0 ||
++	    (instr & 0xffffffe0u) != 0xd50b7420u || (instr & 0x1fu) == 31) {
++		return false;
++	}
++	uint64_t dczid = __builtin_arm_rsr64("DCZID_EL0");
++	uint32_t bytes = 4u << (dczid & 0xfu);
++	if ((dczid & 0x10u) || bytes > sizeof(zeros)) {
++		return false;
++	}
++	user_addr_t base = get_saved_state_reg(state, instr & 0x1fu) & ~(user_addr_t)(bytes - 1);
++	if (copyout((const char *)zeros, base, bytes) != 0) {
++		return false;
++	}
++	add_saved_state_pc(state, 4);
++	native_zva_emulated++;
++	return true;
+ }
+ 
+ static void
+@@ -1597,6 +1625,8 @@
+ 		}
+ 
+ 		codes[0] = result;
++	} else if (is_alignment_fault(fault_code) && native_emulate_dc_zva(state)) {
++		thread_exception_return();
+ 	} else if (is_alignment_fault(fault_code)) {
+ 		kern_return_t vmfkr = KERN_SUCCESS;
+ 		thread->machine.recover_esr = 0;

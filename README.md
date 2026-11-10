@@ -1,3 +1,82 @@
+# iOS 18 on the Xiaomi Mi 8 Pro (equuleus)
+
+A port of [Bergamota](https://github.com/ry-diffusion/Bergamota), which runs iOS on the Poco F1, to the Xiaomi Mi 8 Pro. Both phones use the Snapdragon 845 with the Adreno 630.
+Bergamota's code is used with its author's permission. All credit for the kernel, the bootloader, Renegade and Chlorophyll goes to that project and the ones it builds on.
+
+This is an experiment, not a usable phone OS. Apple's security model is mostly switched off, so do not put personal data on it.
+
+## Status
+
+Tested on one phone, 8 GB / 128 GB, with iOS 18.7.8 (22H352).
+
+### Working
+
+| Feature | Notes |
+| --- | --- |
+| Boot to the home screen | iPhone interface, about 2 minutes |
+| Touch | ST FingerTip over bit-banged I2C |
+| Power and volume buttons | Screen sleep and wake work too |
+| Stock apps | Notes, Maps, Calendar, Mail, Reminders and others appear on the home screen; some were opened, not all are tested |
+| GPU (Adreno 630) | Its signed firmware loads, and the compositor and wallpaper run on the GPU through Chlorophyll |
+| Blur and Control Center | Rendered on the GPU |
+| Display | Page flipping, hardware scaler and zero-copy scan-out on this command-mode panel |
+| Frame rate | Peaks of about 50 updates per second. Not locked: frame drops remain |
+| Stability | About 7 hours up with 60,861 GPU jobs, 0 timeouts, 0 GPU recoveries |
+| Clock | Survives reboots after being set once |
+| Memory | 5.95 GB of the 8 GB |
+| USB | Network, SSH and a live kernel log |
+
+### Partly working or unconfirmed
+
+| Feature | State |
+| --- | --- |
+| Dual boot | LineageOS on `boot` and iOS on `recovery` (Power + Vol Up). The image is written and verified, but starting it this way has not been tested yet |
+| Charging | The driver runs, capped at 1500 mA, and has reported `TAPER`. A full drain and recharge has not been tested |
+| Speed | Smoother than software drawing, but still slow at times. CPU time in `backboardd` and SpringBoard is the current limit |
+
+### Not working
+
+| Feature | State |
+| --- | --- |
+| Wi-Fi, cellular | Not working |
+| Bluetooth | Not enabled on this phone |
+| Sound, camera, sensors, Face ID | Not set up |
+| Safari | Crashes at launch. `webbookmarksd` gets an empty path from `_SFSafariIconImageCacheDirectoryPath`, and Safari very likely hits the same error |
+| Widgets | Show "Waiting..." |
+| Settings, time zone screen | Froze once. The time zone was set over SSH instead |
+| Brightness slider | Not working in Bergamota on iOS 18; not tested here |
+
+### Known visual issues
+
+- Fine hairlines on some rounded controls, probably seams between triangles.
+- Black bars of about 21 pixels on each side, because the iPhone X shape is narrower than this panel.
+- The wallpaper needs synchronous GPU commits (`/private/var/tmp/bgmtl.sync`) to avoid black wedges in some display modes.
+
+## What differs from the Poco F1
+
+- `xnu/patches-11215/0260-equuleus-st-fts-touch.patch`: ST FingerTip touch, its 1.8 V then 3.3 V power-up, and the L28 rail.
+- `xnu/patches-11215/0028-sweet-ufs-root-device.patch`: the root defaults to GPT name `ios_data`.
+- `enxerto/`: `BOARD=equuleus`, 1080x2248, and **bootloader flashing disabled**, because `userdata` and `boot` belong to LineageOS on this phone.
+- `tools/mkadt.py`: board `equuleus`, with the full contiguous memory window above 4 GiB.
+- `tools/equuleus/`: log and Data disk helpers. `ipados-17-unixnu/`: the earlier iPadOS attempt.
+
+### Boot settings
+
+    sweetfb_hz=60 sweetfb_flip=1 sweetfb_hw=1 sweetfb_direct=1 sweetfb_scancopy=2 sweetfb_zcforce=1
+    sweetgpu=8 sweetgpufreq=gov sweetgpuboost=7 sweetcharger=2 sweetcharger_fcc=1500 ufsroot=ios_data ufslogsecs=1
+
+The GPU is fixed at 257 MHz unless `sweetgpufreq=gov` is set, and its jobs then time out. `sweetfb_zcforce=1` is safe on this phone only because the display's SMMU context bank has translation off (`SCTLR` M bit clear); check that with `sweetfb_smmu=2` on any other firmware.
+
+## What is not in this repository
+
+Apple firmware and root images, Qualcomm GPU firmware, boot images (they embed that firmware), this phone's device tree, and partition backups. You need your own copies. The `zap` firmware is signed per device and must come from your own phone's `/vendor/firmware`.
+
+**Warning:** Bergamota's default installs into `userdata`. This port uses a separate `ios_data` partition. Check your partition table before writing anything.
+
+---
+
+*Bergamota's own README follows.*
+
 <p align="center">
   <img src="tools/identity/icon-512.png" width="168" alt="Bergamota">
 </p>

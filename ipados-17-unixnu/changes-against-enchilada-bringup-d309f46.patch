@@ -1,0 +1,1444 @@
+diff --git a/board.toml b/board.toml
+index 9acb709..6d42fc1 100644
+--- a/board.toml
++++ b/board.toml
+@@ -7,10 +7,10 @@
+ # phone with scripts/parse-device-dump.py before trusting them for a new hardware stage.
+ 
+ [board]
+-name = "enchilada"
++name = "equuleus"
+ soc = "SDM845"
+ os_profile = "ipados-17.7.11-21H461"  # record key for scripts/porting-record.py; schema-1 config.py never reads it
+-description = "OnePlus 6"
++description = "Xiaomi Mi 8 Pro"
+ kit = "enchilada"                     # the package/ of this repository appears as kits/enchilada in the build tree
+ 
+ # The target OS image: the unchanged iPad7,1 iPadOS 17.7.11 restore image, the sheng target. SDM845 is ARMv8.2 without
+@@ -50,9 +50,10 @@ fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustC
+ #
+ # The range is 50.41 GiB, which holds the 7.88 GiB of OS + SystemOS with room for the Data volume.
+ # Re-read it on another phone with scripts/dump-device-facts.sh before flashing there.
++# Mi 8 Pro: GPT entry 23, ios_root (4096-byte LBAs), read from this phone on 2026-11-08. NOT the Android userdata.
+ [userdata]
+-first_lba = 0x186f40
+-last_lba = 0xe217fa
++first_lba = 0x6a0000
++last_lba = 0xe9ffff
+ lba_bytes = 4096
+ windows = [
+   { name = "OS", component = "OS" },
+@@ -60,7 +61,7 @@ windows = [
+ ]
+ 
+ [kernel]
+-defconfig = "enchilada_defconfig"
++defconfig = "equuleus_defconfig"
+ # Archive builders of the kernel step, in order: the generic part of the sheng list.
+ archives = [
+   "build-corecrypto-14.py",
+@@ -131,31 +132,13 @@ roots = [
+ # patches that package in place instead of deriving one from another device. The preflight then cross-checks the
+ # candidate platform intervals of MemoryMapLib.c against the device tree's reserved-memory before anything is flashed.
+ [firmware]
+-config = "enchilada"                  # Resources/Configs/enchilada.toml in the Mu-Silicium checkout (--uefi)
+-dsc = "Platforms/OnePlus/enchiladaPkg/enchilada.dsc"
+-fd = "Build/enchiladaPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+-preflight = ["scripts/check-enchilada.py"]
+-# Mu-Silicium's own patches to the shared edk2 checkout, applied for the build and reverted afterwards
+-# (scripts/unixnu/firmware.py:56-60, which reads exactly this key). Upstream applies the same set from
+-# build_uefi.py:508-511 and reverses it at :487-489; leaving them out produces a firmware that builds,
+-# comes out at the right size, boots, and then misbehaves in the four places these patches fix:
+-#   Auth-Service  the authorisation service has to start before the variable service
+-#   Boot-Manager  keeps the boot manager menu reachable
+-#   Timer         no timer reprogramming once the DXE core is up
+-#   Usb-Bus       survive a device disappearing in the middle of enumeration
+-# AsmMacroLib.patch is deliberately absent: MdePkg/Include/AArch64/AsmMacroLib.h already carries that
+-# fix in a newer form ("CLANGPDB does not merge ELF style sections"), and applying the old patch on
+-# top would undo it. scripts/check_mu_patches.py asserts this list matches what still applies.
+-patches = [
+-  "Resources/MuPatches/Auth-Service.patch",
+-  "Resources/MuPatches/Boot-Manager.patch",
+-  "Resources/MuPatches/Timer.patch",
+-  "Resources/MuPatches/Usb-Bus.patch",
+-]
++config = "equuleus"
++dsc = "Platforms/Xiaomi/equuleusPkg/equuleus.dsc"
++fd = "Build/equuleusPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+ submodules = ["Binaries", "Common/Mu", "Common/Mu_OEM_Sample", "Silicium-ACPI", "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl"]
+ packages = [
+   "{uefi}",
+-  "{uefi}/Platforms/OnePlus",
++  "{uefi}/Platforms/Xiaomi",
+   "{tree}/package",
+   "{tree}/drivers/DarwinBoot",
+   "{edk2}",
+@@ -164,14 +147,13 @@ packages = [
+   "{uefi}/Silicon/Qualcomm",
+   "{uefi}/Silicon/Silicium",
+   "{uefi}/Silicium-ACPI",
+-  "{uefi}/Silicium-ACPI/Platforms/OnePlus",
++  "{uefi}/Silicium-ACPI/Platforms/Xiaomi",
+   "{uefi}/Silicium-ACPI/Silicon/Qualcomm",
+ ]
+ 
+ [firmware.defines]
+-DEVICE_MODEL = "enchilada"
+-BUILDID_STRING = "enchilada-bringup"
+-# Defaults of Mu-Silicium build_uefi.py and DeviceBuild.py, which unixnu does not run.
++DEVICE_MODEL = "equuleus"
++BUILDID_STRING = "equuleus-bringup"
+ ENABLE_SECUREBOOT = 0
+ MEMORY_PROTECTION = "TRUE"
+ SHIP_MODE = "FALSE"
+@@ -219,18 +201,18 @@ SHIP_MODE = "FALSE"
+ # The stock ramdisk of this phone is 18376167 bytes (its own boot_a; LineageOS 22.2 ships 16340632) -- just under
+ # the same 18 MiB window, which is a second reason to believe the window is real.
+ [payload]
+-volume = "ENCHILADAESP"
+-size_mib = 144
++volume = "EQUULEUSESP"
++size_mib = 512
+ loader = "firmware"
+-title = "enchilada first boot: XNU to console"
++title = "equuleus first boot: XNU to console"
+ # --skip-setup edits a copy of the Data seed so the Hello pages are skipped. payload.py requires the tool to be
+ # named here; it mounts the seed read-write with hdiutil, so it only runs on macOS (the CI runner is).
+-skip_setup_tool = "scripts/seed-data-skip-setup.py"
++skip_setup_tool = "scripts/seed-data-skip-setup-equuleus.py"
+ # --no-auto-dim also sets SBDisableAutoDim / SBDontDimOrLockOnAC / SBDisableIdleSleep.  This board
+ # has no buttons and no working idle timer, so without it SpringBoard dims and the system sleeps
+ # about thirty seconds after it starts (docs/guide/skip-setup.md).  The arguments are part of the
+ # edited seed's cache key, so changing them rebuilds it instead of reusing a stale one.
+-skip_setup_args = ["--no-auto-dim"]
++skip_setup_args = ["--no-auto-dim", "--first-boot-migration"]
+ # MEASURED ON THIS PHONE (2026-10-27): MemTotal 5767708 kB, ro.boot.msz = 6, ro.boot.stg = 64
+ # -> this is the 6 GiB / 64 GB SKU, so the DDR size is 0x180000000, not the 8 GiB value that was
+ # inherited from the 6T. The DDR size goes into the Apple device tree, and a wrong value makes XNU
+@@ -238,7 +220,8 @@ skip_setup_args = ["--no-auto-dim"]
+ # Read it on another phone with `adb shell head -1 /proc/meminfo` (MemTotal; 6 GiB shows ~5.5 GiB,
+ # 8 GiB shows ~7.6 GiB) and cross-check `getprop ro.boot.msz`, which the bootloader fills with the
+ # SKU's RAM size in GiB.
+-dram_size = "0x180000000"
++# Mi 8 Pro: /memory under LineageOS, 0x80000000 + 0x1fc8a0000 contiguous, rounded down to 2 MiB.
++dram_size = "0x1fc800000"
+ # Patch a copy of the kernel with the sheng boot probes (scripts/patch-xnu-entry-probe.py --panic-screen --no-reset):
+ # a blue band at kernel entry, a magenta band before the MMU is enabled, and panic() drawn on the screen.
+ # 2026-10-28: the --no-reset build reached the magenta band (MMU enable) and then went silent with no panic
+@@ -310,16 +293,13 @@ dram_size = "0x180000000"
+ # Note on flashing: the fastboot in C:\platform-tools is a 32-bit binary and dies with
+ # `std::bad_alloc` on the 8.74 GiB raw image, so userdata goes in as a sparse image instead --
+ # scripts/make_sparse_image.py converts and byte-verifies it, fastboot then sends 12 chunks.
+-entry_probe_reset_delay = 4
+-entry_probe_reset_after = "_vfs_mountroot"
+-entry_probe_reset_in = "_bsd_init"
+-entry_probe_reset_occurrence = 1
++# Mi 8 Pro: no timed reset on the first boots; the screen shows where the kernel stops.
+ # The panic screen and stage 3 cannot both be installed in this kernel: with stage 3 in use the probe caves
+ # end at 0xfffffff0073ec620 and the panic screen (0x9ed bytes) would run 0x1d past the padding at
+ # 0xfffffff0073ecff0 ("panic screen is 0x9ed bytes at 0xfffffff0073ec620, the padding ends at ...cff0").
+ # One question per run: this build asks whether the CPU survives the MMU enable, and the previous --no-reset
+ # run already showed there is no panic to draw. Turn this back on with entry_probe_reset_delay removed.
+-panic_screen = false
++panic_screen = true
+ # The static and System trust caches of 21H461, for the userland stages.
+ trust_cache_sha256 = [
+   "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
+@@ -360,7 +340,7 @@ kernel_args = [
+   # `sheng-touch-hid=1` makes NativeHidInput publish the digitizer collection beside its keyboard.
+   "debug=0x14e",
+   "enchilada-touch=4","sheng-touch-hid=1",
+-  "armcpu-timer-intid=19","-apfs_shared_datavolume","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","boot-progress=2","sheng-log=1","sheng-autoreset=2400","pcpu=0xf0","enchilada-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","enchilada-cpufreq=2","native-data-writeback=1","native-ufs-diagnostics=1",
++  "armcpu-timer-intid=19","-apfs_shared_datavolume","sheng-staged-apps=1","sheng-disable-watchdogd=1","sheng-lite=1","sheng-data-persist=2","sheng-data-reset=1","boot-progress=2","sheng-log=1","sheng-autoreset=2400","pcpu=0xf0","enchilada-wdog=3","sheng-smp=1","cpus=8","armcpu-self-ipi=1","enchilada-cpufreq=2","enchilada-cpufreq-cap=2400","native-data-writeback=1","native-ufs-diagnostics=1",
+   "-no_slto_panic",
+   "native-ufs-root=1",
+   
+@@ -431,7 +411,7 @@ psci_method = "smc"
+ # The ABL also refuses fastboot boot ("Load Error") once the active slot is unbootable: every reset spends one retry
+ # of that slot, so run "fastboot set_active b" (or a) before "fastboot boot" during bring-up.
+ [bootimg.image]
+-header_version = 0
++header_version = 1
+ pagesize = 4096
+ base = 0x0
+ kernel_offset = 0x8000
+diff --git a/drivers/NativeUfs/RootLayout.h b/drivers/NativeUfs/RootLayout.h
+index a465e5c..1b1d588 100644
+--- a/drivers/NativeUfs/RootLayout.h
++++ b/drivers/NativeUfs/RootLayout.h
+@@ -108,7 +108,8 @@ static bool findRootLayout (RootLayout *layout, const char **why)
+     *why = "GPT entries CRC";
+     return false;
+   }
+-  static const char wanted[] = "userdata";
++  // Mi 8 Pro: "userdata" is LineageOS. The iOS root, the Data store and the log window all live in this partition.
++  static const char wanted[] = "ios_root";
+   bool found = false;
+   uint32_t userdataIndex = 0;
+   for (uint32_t index = 0; index < count; index++) {
+diff --git a/drivers/ShengHidInput/NativeHidInput.cpp b/drivers/ShengHidInput/NativeHidInput.cpp
+index 443717f..b9b890f 100644
+--- a/drivers/ShengHidInput/NativeHidInput.cpp
++++ b/drivers/ShengHidInput/NativeHidInput.cpp
+@@ -49,6 +49,18 @@ static const unsigned char descriptor[]={
+     0x75,0x01,0x95,0x04,0x81,0x02,
+     0x75,0x04,0x95,0x01,0x81,0x03,0xc0
+ };
++// The board's hardware buttons as their own device: one Consumer Control collection, the usage pair of IOHIDFamily's "HID Buttons"
++// personality and of Apple's built-in button drivers. Same report 2 layout as above.
++static const unsigned char buttonDescriptor[]={
++    0x05,0x0c,0x09,0x01,0xa1,0x01,0x85,0x02,
++    0x09,0x40,0x09,0x30,0x09,0xe9,0x09,0xea,0x15,0x00,0x25,0x01,
++    0x75,0x01,0x95,0x04,0x81,0x02,
++    0x75,0x04,0x95,0x01,0x81,0x03,0xc0
++};
++extern "C" {
++// For the boot log: an event driver attached below the button device, reports submitted, the last handleReport result.
++extern volatile uint32_t native_buttons_driver, native_buttons_reports, native_buttons_result;
++}
+ // Report 3: ten-finger Touch Screen collection (Tip Switch, Touch Valid, Contact Identifier, X, Y per finger, then Contact Count).
+ // Touch Valid (0x47) is the finger confidence: IOHIDEventDriver turns a finger transducer whose value is 0 into a hand (palm), which
+ // multi-finger and system edge gestures ignore, so every finger, down or lifting, sends 1.
+@@ -254,6 +266,7 @@ class NativeHidInput : public IOHIDDevice {
+     // The digitizer is a separate service from the keyboard: backboardd matches digitizers by primary usage page/usage
+     // (Digitizer/Touch Screen) and the Built-In flag, which a combined keyboard-first descriptor would not provide.
+     bool touchOnly=false;
++    bool buttonsOnly=false;
+     bool eventDriverFound=false;
+     IOReturn submitReport(IOMemoryDescriptor *report) {
+ #if defined(NATIVE_HID_SOURCE_API) && NATIVE_HID_SOURCE_API
+@@ -342,11 +355,13 @@ class NativeHidInput : public IOHIDDevice {
+         NativeHidInput *self=OSDynamicCast(NativeHidInput,owner);if(!self)return kIOReturnSuccess;
+         self->buttons=static_cast<uint8_t>(uintptr_t(mask)&0xe);
+         if(!self->hasEventDriverCached())return kIOReturnSuccess;
++        native_buttons_driver=1;
+         unsigned char report[]={2,static_cast<unsigned char>((self->down?1:0)|self->buttons)};
+         IOBufferMemoryDescriptor *buffer=IOBufferMemoryDescriptor::withBytes(report,sizeof(report),kIODirectionNone);
+         IOReturn result=buffer?self->submitReport(buffer):kIOReturnNoMemory;
+         OSSafeReleaseNULL(buffer);
+-        native_hid_input_observed(4,result);
++        native_buttons_result=(uint32_t)result;
++        native_buttons_reports=native_buttons_reports+1;
+         return kIOReturnSuccess;
+     }
+     bool hasEventDriverCached() {
+@@ -373,6 +388,7 @@ class NativeHidInput : public IOHIDDevice {
+     }
+     static void tick(OSObject *owner,IOTimerEventSource *source) {
+         NativeHidInput *self=OSDynamicCast(NativeHidInput,owner);if(!self)return;
++        if(self->buttonsOnly)return;
+         native_hid_live_checkpoint(self);
+         if(self->touchOnly){source->setTimeoutMS(1000);return;}
+         if(!self->down && !hasEventDriver(self,4)) {
+@@ -394,14 +410,16 @@ class NativeHidInput : public IOHIDDevice {
+     }
+ public:
+     void setTouchOnly() {touchOnly=true;}
++    void setButtonsOnly() {buttonsOnly=true;}
+     IOWorkLoop *getWorkLoop() const override {return inputLoop;}
+-    OSString *newTransportString() const override {return OSString::withCString(touchOnly?"SPI":"Virtual");}
+-    OSString *newProductString() const override {return OSString::withCString(touchOnly?"Offline touch digitizer":"Offline HID input probe");}
++    OSString *newTransportString() const override {return OSString::withCString(buttonsOnly?"SPU":touchOnly?"SPI":"Virtual");}
++    OSString *newProductString() const override {return OSString::withCString(buttonsOnly?"Hardware buttons":touchOnly?"Offline touch digitizer":"Offline HID input probe");}
+     IOReturn newReportDescriptor(IOMemoryDescriptor **out) const override {
+         if(!out)return kIOReturnBadArgument;
+         unsigned char combined[sizeof(descriptor)+sizeof(touchDescriptor)];
+         size_t size;
+-        if(touchOnly){size=sizeof(touchDescriptor);memcpy(combined,touchDescriptor,size);}
++        if(buttonsOnly){size=sizeof(buttonDescriptor);memcpy(combined,buttonDescriptor,size);}
++        else if(touchOnly){size=sizeof(touchDescriptor);memcpy(combined,touchDescriptor,size);}
+         else{
+             size=sizeof(descriptor);memcpy(combined,descriptor,size);
+             // Default: one device, keyboard collection first, digitizer second (the arrangement whose event driver
+@@ -417,12 +435,13 @@ public:
+         // keyboard. This is a matching property, not a client entitlement.
+         if(!setProperty("HIDDefaultBehavior",true))return false;
+         unsigned touch=0;
+-        touchEnabled=PE_parse_boot_argn("sheng-touch-hid",&touch,sizeof(touch)) && touch==1;
++        touchEnabled=!buttonsOnly && PE_parse_boot_argn("sheng-touch-hid",&touch,sizeof(touch)) && touch==1;
+         // DigitizerCollectionDispatch: IOHIDEventDriver (setDigitizerProperties) reads it up the service plane and then sends each
+         // report's fingers as one digitizer collection with a child per finger. Without it a touch screen gets one event per finger,
+         // and backboardd takes each as the whole touch set, so no two fingers are ever down together for UIKit (no pinch, no
+         // multi-finger or system gestures).
+         if(touchOnly||touchEnabled){setProperty("Built-In",true);setProperty("DisplayIntegrated",true);setProperty("DigitizerCollectionDispatch",true);}
++        if(buttonsOnly){setProperty("Built-In",true);setProperty("VendorID",0x05acULL,32);setProperty("ProductID",1ULL,32);}
+         if(!IOHIDDevice::start(provider))return false;
+         timer=IOTimerEventSource::timerEventSource(this,tick);
+         if(!timer || inputLoop->addEventSource(timer)!=kIOReturnSuccess) {
+@@ -431,14 +450,14 @@ public:
+         if(touchOnly||touchEnabled) {
+             if(&native_touch_set_sink)native_touch_set_sink(&NativeHidInput::touchNotify,this);
+         }
+-        if(!touchOnly && &native_buttons_set_sink)native_buttons_set_sink(&NativeHidInput::buttonsNotify,this);
++        if(buttonsOnly && &native_buttons_set_sink)native_buttons_set_sink(&NativeHidInput::buttonsNotify,this);
+         setProperty("OfflineInputProbe",true);
+-        native_hid_input_observed(2,0);
++        if(!buttonsOnly)native_hid_input_observed(2,0);
+         timer->setTimeoutMS(1000);return true;
+     }
+     void stop(IOService *provider) override {
+         if((touchOnly||touchEnabled) && &native_touch_set_sink)native_touch_set_sink(nullptr,nullptr);
+-        if(!touchOnly && &native_buttons_set_sink)native_buttons_set_sink(nullptr,nullptr);
++        if(buttonsOnly && &native_buttons_set_sink)native_buttons_set_sink(nullptr,nullptr);
+         if(timer){timer->cancelTimeout();inputLoop->removeEventSource(timer);OSSafeReleaseNULL(timer);}
+         IOHIDDevice::stop(provider);
+     }
+@@ -446,4 +465,5 @@ public:
+ };
+ OSDefineMetaClassAndStructors(NativeHidInput,IOHIDDevice)
+ extern "C" IOService *native_hid_input_allocate(void) {return new NativeHidInput;}
++extern "C" IOService *native_hid_buttons_allocate(void) {NativeHidInput *device=new NativeHidInput;if(device)device->setButtonsOnly();return device;}
+ extern "C" IOService *native_hid_touch_allocate(void) {NativeHidInput *device=new NativeHidInput;if(device)device->setTouchOnly();return device;}
+diff --git a/package/BootLog.c b/package/BootLog.c
+index 8a3c010..38621a4 100644
+--- a/package/BootLog.c
++++ b/package/BootLog.c
+@@ -200,7 +200,7 @@ extern volatile uint32_t native_touch_edge_stats[4] __attribute__((weak_import))
+ // enchilada touch bring-up (EnchiladaTouchProbe.cpp): the requested stage, its summary row and one row per stage plus the last I2C error.
+ extern volatile unsigned native_touch_stage_req __attribute__((weak_import));
+ extern char native_touch_rows[4][120] __attribute__((weak_import));
+-extern char enchilada_touch_rows[10][120] __attribute__((weak_import));
++extern char enchilada_touch_rows[12][120] __attribute__((weak_import));
+ extern volatile uint64_t native_adreno_reassert_ticks __attribute__((weak_import));
+ extern volatile uint64_t native_adreno_cache_stats[5] __attribute__((weak_import));
+ // NativeAdrenoPublish.cpp: per process name that opened the GPU, and the processes that asked the Metal discovery for its plugin.
+@@ -955,7 +955,7 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
+   if (&native_touch_stage_req && native_touch_stage_req && &native_touch_rows && &enchilada_touch_rows) {
+     at = put(out, at, cap, "[enchilada touch]", 16);
+     at = put(out, at, cap, native_touch_rows[0], sizeof native_touch_rows[0]);
+-    for (unsigned i = 0; i < 10; ++i) if (enchilada_touch_rows[i][0]) at = put(out, at, cap, enchilada_touch_rows[i], sizeof enchilada_touch_rows[i]);
++    for (unsigned i = 0; i < 12; ++i) if (enchilada_touch_rows[i][0]) at = put(out, at, cap, enchilada_touch_rows[i], sizeof enchilada_touch_rows[i]);
+   }
+   // The submissions' write-combine work: audits, IB lines compared and found dirty, pages set back to write-combined, the re-assertion's
+   // total time, and the CPU cache maintenance passes (count, total ms, MiB).
+diff --git a/package/BootProgressStubs.c b/package/BootProgressStubs.c
+index 9655916..6ba64b3 100644
+--- a/package/BootProgressStubs.c
++++ b/package/BootProgressStubs.c
+@@ -1,167 +1,172 @@
+-// SPDX-License-Identifier: BSD-2-Clause-Patent
+-// Weak stand-ins for the diagnostics the boot progress kit reads from sheng's display, HID, touch, Adreno and cpufreq code, which
+-// enchilada does not link (yet). Data reads as zero and functions return zero; a real definition, once linked, takes precedence.
+-// Generated by scripts/gen-boot-progress-stubs.py from the undefined symbols of the enchilada kernel link.
+-#include <stdint.h>
+-#include <stddef.h>
+-#include <stdbool.h>
+-
+-__attribute__((weak)) void boot_log_tick(unsigned p0) { (void)p0;  }
+-__attribute__((weak)) char boot_process_attempts[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char boot_process_busy[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) void boot_process_capture(void) {   }
+-__attribute__((weak)) char boot_process_passes[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char boot_process_rows[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char boot_process_seen[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) void boot_process_snapshot(void) {   }
+-__attribute__((weak)) unsigned boot_ui_trace_hot_rows(char p0[][120], unsigned p1) { (void)p0; (void)p1; return 0; }
+-__attribute__((weak)) char boot_ui_trace_index[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char boot_ui_trace_label[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char boot_ui_trace_phase[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char boot_ui_trace_ready[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) unsigned boot_ui_trace_role_rows(unsigned p0, char p1[][120], unsigned p2, unsigned p3) { (void)p0; (void)p1; (void)p2; (void)p3; return 0; }
+-__attribute__((weak)) char boot_ui_trace_rows[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) void boot_ui_trace_snapshot(unsigned p0) { (void)p0;  }
+-__attribute__((weak)) void enchilada_backlight_poll(void) {   }
+-__attribute__((weak)) char enchilada_cpufreq_rows[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char enchilada_touch_rows[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_audit_attr[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_audit_ticks[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_cache_stats[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_cached_read32[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_client_log[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_client_text[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_coherence[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_coherent_skips[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_dram_read32[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_export_stats[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_fence_phys[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_fence_wait[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) bool native_adreno_fences(uint32_t *submitted, uint32_t *retired) { (void)submitted; (void)retired; return 0; }
+-__attribute__((weak)) bool native_adreno_fences_detail(uint32_t * p0, uint32_t * p1, uint32_t * p2) { (void)p0; (void)p1; (void)p2; return 0; }
+-__attribute__((weak)) char native_adreno_ib_log[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_ib_log_count[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_import_diag[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_import_fail_offset[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_import_fail_pa[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_import_stage[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_io_coherent[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_map_fail[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_metal_askers[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_metal_rows[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_method_stats[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_mount_fail[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_pool_stats[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_pool_status[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_pool_wc[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_reassert_ticks[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_ring_log[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_ring_log_count[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_view_diag[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_vm_phase_us[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_wait_outer[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_wc_audit[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_wc_distrusted[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_adreno_window_overflow[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_backlight_stats[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_buttons_stats[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_cpufreq_row[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_cpufreq_stage[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gop_gpu_abandoned[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gop_gpu_completions[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gop_gpu_failures[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gop_gpu_offers[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gop_virtual[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gop_wait_stats[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_addon2_stage[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_addon2_status[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_addon3_stage[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_addon3_status[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_addon_error[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_addon_failed[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_addon_files[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_addon_same[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_addon_stage[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_addon_status[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_addon_written[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_coherence_row[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_idle_sleeps[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_idle_spins[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_gpu_perf_vote[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) int native_gpu_trace_enabled(void) {  return 0; }
+-__attribute__((weak)) void native_gpu_trace_record(uint32_t event, uint32_t pid, const uint64_t *values, uint32_t count) { (void)event; (void)pid; (void)values; (void)count;  }
+-__attribute__((weak)) char native_hid_input_events[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_hid_input_results[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_hid_touch_service[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_client_calls[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_client_class[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_client_pid[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_client_status[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_client_type[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) unsigned native_legacy_clients_dump(char * p0, unsigned p1) { (void)p0; (void)p1; return 0; }
+-__attribute__((weak)) char native_legacy_copy_bytes_last[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_copy_bytes_sum[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_copy_last[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_copy_max[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_copy_n[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_copy_sum[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_frame_color_counts[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_frame_color_other[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_frame_colors[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_frame_count[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_frame_kind[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_frame_stats[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_frame_time[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_gop_bytes[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_gop_physical[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_gop_virtual[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_gpu_fallbacks[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_gpu_last_status[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_guard_slot[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_pm_callbacks[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_pm_calls[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_pm_stage[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_prepare_attempts[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_prepare_calls[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_prepare_reason[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) unsigned native_legacy_prepare_report(char * p0, unsigned p1) { (void)p0; (void)p1; return 0; }
+-__attribute__((weak)) unsigned native_legacy_properties_now(char * p0, unsigned p1) { (void)p0; (void)p1; return 0; }
+-__attribute__((weak)) char native_legacy_rej_class[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_rej_reason[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_rej_size[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_rej_state[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_rej_surface[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_rej_surfaces[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_retirement_calls[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_stage[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) unsigned native_legacy_state_words(char * p0, unsigned p1) { (void)p0; (void)p1; return 0; }
+-__attribute__((weak)) char native_legacy_swap_accepted_count[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_swap_rejected_count[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) unsigned native_legacy_swap_timeline(char * p0, unsigned p1) { (void)p0; (void)p1; return 0; }
+-__attribute__((weak)) char native_legacy_swap_validation_calls[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_swap_validation_reason[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_swap_validation_result[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_transfer_bytes[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_transfer_calls[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_legacy_transfer_status[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_staged_apps_dirs[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_staged_apps_error[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_staged_apps_failed[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_staged_apps_files[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_staged_apps_mib[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_staged_apps_path[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_staged_apps_stage[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_swipe_stats[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_touch_count[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_touch_edge_stats[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_touch_extent[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) void native_touch_probe(void) {   }
+-__attribute__((weak)) char native_touch_rows[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_touch_seq[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_touch_stage_req[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_touch_stroke_count[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_touch_strokes[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_touch_xs[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_touch_ys[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) char native_wifi_stats[4096] __attribute__((aligned(16)));
+-__attribute__((weak)) void sheng_cpufreq_poll(void) {   }
++// SPDX-License-Identifier: BSD-2-Clause-Patent
++// Weak stand-ins for the diagnostics the boot progress kit reads from sheng's display, HID, touch, Adreno and cpufreq code, which
++// enchilada does not link (yet). Data reads as zero and functions return zero; a real definition, once linked, takes precedence.
++// Generated by scripts/gen-boot-progress-stubs.py from the undefined symbols of the enchilada kernel link.
++#include <stdint.h>
++#include <stddef.h>
++#include <stdbool.h>
++
++__attribute__((weak)) void boot_log_tick(unsigned p0) { (void)p0;  }
++__attribute__((weak)) char boot_process_attempts[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char boot_process_busy[4096] __attribute__((aligned(16)));
++__attribute__((weak)) void boot_process_capture(void) {   }
++__attribute__((weak)) char boot_process_passes[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char boot_process_rows[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char boot_process_seen[4096] __attribute__((aligned(16)));
++__attribute__((weak)) void boot_process_snapshot(void) {   }
++__attribute__((weak)) unsigned boot_ui_trace_hot_rows(char p0[][120], unsigned p1) { (void)p0; (void)p1; return 0; }
++__attribute__((weak)) char boot_ui_trace_index[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char boot_ui_trace_label[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char boot_ui_trace_phase[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char boot_ui_trace_ready[4096] __attribute__((aligned(16)));
++__attribute__((weak)) unsigned boot_ui_trace_role_rows(unsigned p0, char p1[][120], unsigned p2, unsigned p3) { (void)p0; (void)p1; (void)p2; (void)p3; return 0; }
++__attribute__((weak)) char boot_ui_trace_rows[4096] __attribute__((aligned(16)));
++__attribute__((weak)) void boot_ui_trace_snapshot(unsigned p0) { (void)p0;  }
++__attribute__((weak)) void enchilada_backlight_poll(void) {   }
++__attribute__((weak)) char enchilada_cpufreq_rows[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char enchilada_touch_rows[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_audit_attr[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_audit_ticks[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_cache_stats[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_cached_read32[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_client_log[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_client_text[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_coherence[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_coherent_skips[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_dram_read32[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_export_stats[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_fence_phys[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_fence_wait[4096] __attribute__((aligned(16)));
++__attribute__((weak)) bool native_adreno_fences(uint32_t *submitted, uint32_t *retired) { (void)submitted; (void)retired; return 0; }
++__attribute__((weak)) bool native_adreno_fences_detail(uint32_t * p0, uint32_t * p1, uint32_t * p2) { (void)p0; (void)p1; (void)p2; return 0; }
++__attribute__((weak)) char native_adreno_ib_log[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_ib_log_count[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_import_diag[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_import_fail_offset[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_import_fail_pa[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_import_stage[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_io_coherent[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_map_fail[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_metal_askers[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_metal_rows[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_method_stats[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_mount_fail[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_pool_stats[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_pool_status[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_pool_wc[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_reassert_ticks[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_ring_log[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_ring_log_count[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_view_diag[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_vm_phase_us[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_wait_outer[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_wc_audit[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_wc_distrusted[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_adreno_window_overflow[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_backlight_stats[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_buttons_stats[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_cpufreq_row[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_cpufreq_stage[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gop_gpu_abandoned[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gop_gpu_completions[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gop_gpu_failures[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gop_gpu_offers[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gop_virtual[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gop_wait_stats[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_addon2_stage[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_addon2_status[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_addon3_stage[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_addon3_status[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_addon_error[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_addon_failed[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_addon_files[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_addon_same[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_addon_stage[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_addon_status[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_addon_written[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_coherence_row[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_idle_sleeps[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_idle_spins[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_gpu_perf_vote[4096] __attribute__((aligned(16)));
++__attribute__((weak)) int native_gpu_trace_enabled(void) {  return 0; }
++__attribute__((weak)) void native_gpu_trace_record(uint32_t event, uint32_t pid, const uint64_t *values, uint32_t count) { (void)event; (void)pid; (void)values; (void)count;  }
++__attribute__((weak)) char native_hid_input_events[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_hid_input_results[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_hid_touch_service[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_client_calls[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_client_class[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_client_pid[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_client_status[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_client_type[4096] __attribute__((aligned(16)));
++__attribute__((weak)) unsigned native_legacy_clients_dump(char * p0, unsigned p1) { (void)p0; (void)p1; return 0; }
++__attribute__((weak)) char native_legacy_copy_bytes_last[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_copy_bytes_sum[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_copy_last[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_copy_max[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_copy_n[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_copy_sum[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_frame_color_counts[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_frame_color_other[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_frame_colors[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_frame_count[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_frame_kind[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_frame_stats[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_frame_time[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_gop_bytes[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_gop_physical[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_gop_virtual[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_gpu_fallbacks[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_gpu_last_status[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_guard_slot[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_late_color_counts[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_late_colors[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_late_count[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_late_stats[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_late_time[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_pm_callbacks[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_pm_calls[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_pm_stage[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_prepare_attempts[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_prepare_calls[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_prepare_reason[4096] __attribute__((aligned(16)));
++__attribute__((weak)) unsigned native_legacy_prepare_report(char * p0, unsigned p1) { (void)p0; (void)p1; return 0; }
++__attribute__((weak)) unsigned native_legacy_properties_now(char * p0, unsigned p1) { (void)p0; (void)p1; return 0; }
++__attribute__((weak)) char native_legacy_rej_class[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_rej_reason[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_rej_size[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_rej_state[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_rej_surface[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_rej_surfaces[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_retirement_calls[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_stage[4096] __attribute__((aligned(16)));
++__attribute__((weak)) unsigned native_legacy_state_words(char * p0, unsigned p1) { (void)p0; (void)p1; return 0; }
++__attribute__((weak)) char native_legacy_swap_accepted_count[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_swap_rejected_count[4096] __attribute__((aligned(16)));
++__attribute__((weak)) unsigned native_legacy_swap_timeline(char * p0, unsigned p1) { (void)p0; (void)p1; return 0; }
++__attribute__((weak)) char native_legacy_swap_validation_calls[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_swap_validation_reason[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_swap_validation_result[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_transfer_bytes[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_transfer_calls[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_legacy_transfer_status[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_staged_apps_dirs[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_staged_apps_error[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_staged_apps_failed[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_staged_apps_files[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_staged_apps_mib[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_staged_apps_path[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_staged_apps_stage[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_swipe_stats[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_touch_count[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_touch_edge_stats[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_touch_extent[4096] __attribute__((aligned(16)));
++__attribute__((weak)) void native_touch_probe(void) {   }
++__attribute__((weak)) char native_touch_rows[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_touch_seq[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_touch_stage_req[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_touch_stroke_count[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_touch_strokes[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_touch_xs[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_touch_ys[4096] __attribute__((aligned(16)));
++__attribute__((weak)) char native_wifi_stats[4096] __attribute__((aligned(16)));
++__attribute__((weak)) void sheng_cpufreq_poll(void) {   }
+diff --git a/package/EnchiladaTouchBoard.h b/package/EnchiladaTouchBoard.h
+index c001597..70c4613 100644
+--- a/package/EnchiladaTouchBoard.h
++++ b/package/EnchiladaTouchBoard.h
+@@ -12,10 +12,10 @@
+ 
+ // sdm845.dtsi: qupv3_id_1 geniqup@ac0000 (size 0x6000); i2c12 = i2c@a90000 (size 0x4000), interrupts GIC SPI 357 (unused: polled).
+ #define FTB_QUP_WRAPPER_BASE 0x00ac0000ULL
+-#define FTB_SE_BASE 0x00a90000ULL
++#define FTB_SE_BASE 0x00a98000ULL   // Mi 8 Pro: i2c@a98000, QUP wrapper 1 SE6
+ #define FTB_SE_SIZE 0x4000ULL
+ // sdm845-oneplus-common.dtsi &i2c12 { clock-frequency = <400000>; touchscreen@20 { compatible = "syna,rmi4-s3706b" } }.
+-#define FTB_I2C_ADDR 0x20
++#define FTB_I2C_ADDR 0x49            // Mi 8 Pro: ST FingerTip, fts@49
+ #define FTB_I2C_HZ 400000u
+ // gcc-sdm845.c (GCC at 0x100000, downstream qcom,gcc@100000).
+ #define FTB_GCC_BASE 0x00100000ULL
+@@ -24,16 +24,16 @@
+ #define FTB_GCC_VOTE 0x5200c                    // enable_reg of the three QUP wrapper 1 branches below (BRANCH_HALT_VOTED)
+ #define FTB_VOTE_M_AHB (1u << 20)               // gcc_qupv3_wrap_1_m_ahb_clk, halt 0x1800c
+ #define FTB_VOTE_S_AHB (1u << 21)               // gcc_qupv3_wrap_1_s_ahb_clk, halt 0x18010, hwcg 0x18010 bit 1
+-#define FTB_VOTE_S4 (1u << 26)                  // gcc_qupv3_wrap1_s4_clk, halt 0x184d4
++#define FTB_VOTE_S4 (1u << 28)                 // gcc_qupv3_wrap1_s6_clk (the macro keeps its inherited name)
+ #define FTB_VOTE_ALL (FTB_VOTE_M_AHB | FTB_VOTE_S_AHB | FTB_VOTE_S4)
+ #define FTB_HALT_M_AHB 0x1800c
+ #define FTB_HALT_S_AHB 0x18010
+-#define FTB_HALT_S4 0x184d4
++#define FTB_HALT_S4 0x18734
+ #define FTB_CBCR_CLK_OFF (1u << 31)
+ #define FTB_CBCR_HW_CTL (1u << 1)
+ // gcc_qupv3_wrap1_s4_clk_src: cmd_rcgr 0x184d8, mnd_width 16, hid_width 5, parent map 0 (0 TCXO, 1 GPLL0, 6 GPLL0 even),
+ // DFS-managed (clk-rcg2.c: DFSR at +0x14, per-level PERF_CFG +0x1c, M +0x5c, N +0x9c).
+-#define FTB_S4_RCG 0x184d8
++#define FTB_S4_RCG 0x18738
+ #define FTB_RCG_CMD 0x0
+ #define FTB_RCG_CFG 0x4
+ #define FTB_RCG_DFSR 0x14                       // bit 0 DFS enabled
+@@ -47,14 +47,15 @@
+ #define FTB_TLMM_BASE 0x03400000ULL
+ #define FTB_TILE_NORTH 0x00500000u
+ #define FTB_TILE_EAST 0x00100000u
++#define FTB_TILE_SOUTH 0x00900000u
+ #define FTB_PIN_STRIDE 0x1000u
+-#define FTB_GPIO_SDA 49                         // PINGROUP(49, NORTH, qup12, ...): function 1
+-#define FTB_GPIO_SCL 50                         // PINGROUP(50, NORTH, qup12, ...)
+-#define FTB_GPIO_VIO 88                         // ts_1p8_supply: regulator-fixed, gpio 88 active high (EAST)
+-#define FTB_GPIO_RST 99                         // syna,reset-gpios = <&tlmm 99 GPIO_ACTIVE_LOW>; ts_default_pins (NORTH)
+-#define FTB_GPIO_INT 125                        // interrupts-extended = <&tlmm 125 IRQ_TYPE_EDGE_FALLING> (EAST)
++#define FTB_GPIO_SDA 33                        // Mi 8 Pro: qupv3_se14_i2c_active, NORTH
++#define FTB_GPIO_SCL 34
++#define FTB_GPIO_VIO 23                        // Mi 8 Pro: disp_vddio_vreg, active high, the 1.8 V vdd of the touch controller
++#define FTB_GPIO_RST 32                        // fts,reset-gpio, NORTH
++#define FTB_GPIO_INT 31                        // fts,irq-gpio, NORTH
+ #define FTB_FUNC_GPIO 0
+-#define FTB_FUNC_QUP12 1
++#define FTB_FUNC_QUP12 2                       // Mi 8 Pro: qup14 is function 2 on gpio33/34
+ #define FTB_TLMM_SUMMARY_INTID (32 + 208)
+ // CTL fields (pinctrl-sdm845.c PINGROUP): pull 1:0 (0 none, 1 down, 3 up), function 5:2, drive 8:6 ((mA / 2) - 1), OE bit 9.
+ #define FTB_PULL_NONE 0u
+@@ -83,14 +84,14 @@
+ #define FTB_PUBLISH_X 30480
+ #define FTB_PUBLISH_Y 20320
+ // Default F12 coordinate range when the controller reports none (the hardcoded clone layout): the 1080 x 2280 panel.
+-#define FTB_DEFAULT_MAX_X 1080
+-#define FTB_DEFAULT_MAX_Y 2280
++#define FTB_DEFAULT_MAX_X 1079
++#define FTB_DEFAULT_MAX_Y 2247
+ 
+ // TLMM offset (from FTB_TLMM_BASE) of a touch pin's CTL register; 0 for a pin this board does not use.
+ static inline uint32_t ftb_pin_offset(unsigned gpio) {
+     switch (gpio) {
+-    case FTB_GPIO_SDA: case FTB_GPIO_SCL: case FTB_GPIO_RST: return FTB_TILE_NORTH + FTB_PIN_STRIDE * gpio;
+-    case FTB_GPIO_VIO: case FTB_GPIO_INT: return FTB_TILE_EAST + FTB_PIN_STRIDE * gpio;
++    case FTB_GPIO_SDA: case FTB_GPIO_SCL: case FTB_GPIO_RST: case FTB_GPIO_INT: return FTB_TILE_NORTH + FTB_PIN_STRIDE * gpio;
++    case FTB_GPIO_VIO: return FTB_TILE_SOUTH + FTB_PIN_STRIDE * gpio;
+     default: return 0;
+     }
+ }
+@@ -138,7 +139,7 @@ static inline int ftb_xo_level(uint32_t dfsr, const uint32_t *cfg, const uint32_
+ #define FTB_ORIENT_MIRROR_Y 4u
+ // The panel: the 1080 x 2280 portrait GOP scanout (sdm845-oneplus-enchilada.dts, the samsung,sofef00 mode).
+ #define FTB_PANEL_W 1080u
+-#define FTB_PANEL_H 2280u
++#define FTB_PANEL_H 2248u
+ struct ftb_map {unsigned max_x, max_y, orient;};
+ // Controller coordinates (0..max inclusive) to panel pixels (0..FTB_PANEL_W-1, 0..FTB_PANEL_H-1).
+ static inline void ftb_map_panel(const struct ftb_map *map, unsigned x, unsigned y, unsigned *px, unsigned *py) {
+diff --git a/package/EnchiladaTouchProbe.cpp b/package/EnchiladaTouchProbe.cpp
+index e7b42e0..d8aa653 100644
+--- a/package/EnchiladaTouchProbe.cpp
++++ b/package/EnchiladaTouchProbe.cpp
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: BSD-2-Clause-Patent
+-// Default-off staged bring-up of the enchilada touchscreen: Synaptics S3706B (RMI4) at 0x20 on i2c12 (QUP wrapper 1 SE4).
++// Default-off staged bring-up of the Mi 8 Pro touchscreen: ST FingerTip (st,fts, FtsTouch.h) at 0x49 on i2c@a98000 (QUP wrapper 1 SE6).
++// Derived from the OnePlus 6 driver: its clock, pin, power and HID publication code is kept, the RMI4 stages are replaced.
+ // `enchilada-touch=<n>`:
+ //   1  read only: GCC votes, branch and DFS state, the five touch pins, and (only when the QUP clocks already run) the engine's
+ //      firmware revision, FIFO geometry and FIFO-disable fuse
+@@ -23,6 +24,8 @@
+ extern "C" {
+ #include "GeniI2c.h"
+ #include "Rmi4.h"
++#include "FtsTouch.h"
++#include "PmicButtons.h"
+ #include "EnchiladaTouchBoard.h"
+ }
+ // The RPMh half of the power sequence (PM8998 LDO28 over the apps RSC); it brings its own extern "C" guard.
+@@ -45,8 +48,8 @@ extern "C" volatile struct enchilada_display_logical enchilada_display_logical;
+ extern "C" __attribute__((weak)) volatile struct enchilada_display_logical enchilada_display_logical = {};
+ 
+ #define TOUCH_SLOTS 12   // the array size NativeHidInput and BootProgress declare
+-// enchilada_touch_rows: 0-2 FT1, 3 FT2, 4-5 FT3, 6 FT4, 7 FTE (the last error), 8 FT5 (the HID side). BootLog.c declares the same size.
+-#define FTB_ROWS 10
++// enchilada_touch_rows: 0-2 FT1, 3 FT2, 4-5 FT3, 6 FT4, 7 FTE (the last error), 8 FT5 (the HID side), 9 the rail, 10 FT6 (side buttons), 11 FT7 (staged apps). BootLog.c declares the same size.
++#define FTB_ROWS 12
+ 
+ extern "C" {
+ // Read by package/BootProgress.c (page rows, touch pad overlay) and package/BootLog.c (UFS log); the types are those of their
+@@ -82,6 +85,10 @@ extern volatile uint32_t native_hid_input_events[8] __attribute__((weak_import))
+ extern volatile int native_hid_input_results[8] __attribute__((weak_import));
+ extern volatile uint32_t native_touch_edge_stats[4] __attribute__((weak_import));
+ extern volatile uint32_t native_hid_touch_service[8] __attribute__((weak_import));
++// The copy of the deletable system apps into Data (patch zzy-staged-system-apps): nothing else reports whether it ran.
++extern volatile int native_staged_apps_stage, native_staged_apps_dirs, native_staged_apps_files, native_staged_apps_mib,
++    native_staged_apps_failed, native_staged_apps_error;
++extern volatile uint32_t native_zva_emulated;
+ }
+ 
+ namespace {
+@@ -113,13 +120,12 @@ void ioDelayUs(void *, unsigned us) {
+     const uint64_t ticks = (frequency ? frequency : 19200000) * us / 1000000 + 1;
+     do {__asm__ volatile("isb\n\tmrs %0, cntpct_el0" : "=r"(now));} while (now - start < ticks);
+ }
+-void sleepMs(void *, unsigned ms) {IOSleep(ms);}
+ 
+ enum Pin {kSda, kScl, kVio, kRst, kInt, kPins};
+ const unsigned kGpio[kPins] = {FTB_GPIO_SDA, FTB_GPIO_SCL, FTB_GPIO_VIO, FTB_GPIO_RST, FTB_GPIO_INT};
+ 
+ struct Options {
+-    unsigned stage, hz, power, pdt, rmiReset, maxX, maxY, orient, rate, irq, pollAll, letterbox, view, swipe;
++    unsigned stage, hz, power, pdt, rmiReset, maxX, maxY, orient, rate, irq, pollAll, letterbox, view, swipe, scan, gpioUs;
+ };
+ 
+ // The outcome of the panel's power vote (see railPower below): the TCS it took and the registers it read back.
+@@ -131,8 +137,20 @@ struct Rail {
+     uint32_t dbWord;        // what the node's eight-byte reg held, when it was not the table itself
+ };
+ 
++// The side buttons (PmicButtons.h), polled from the touch loop.
++struct ButtonState {
++    Region core, obs;
++    uint32_t version, lastStatus, held, changes, readErrors, presses[3];
++    unsigned error, mapped;
++    uint16_t ponApid, gpioApid;
++    uint8_t ponRt, gpioRt, gpioMode, gpioEn;
++    bool up, gpioTrusted;
++    struct pmb_debounce debounce;
++};
++
+ struct Session {
+     Options opt;
++    ButtonState buttons;
+     Region gccLow, gccBranch, gccVote, pin[kPins], wrapper, se;
+     // stage 1
+     uint32_t vote, gpll0Vote, gpll0Mode, haltM, haltS, haltS4, dfsr, rcgCfg, perfCfg[FTB_DFS_LEVELS], perfM[FTB_DFS_LEVELS],
+@@ -149,6 +167,10 @@ struct Session {
+     unsigned ackTries;
+     struct geni_i2c i2c;
+     struct ftb_rmi_link link;
++    struct fts_tracker fts;
++    unsigned ftsReady, ftsEvents, ftsErrors;
++    uint32_t busOpen, busLow;
++    uint8_t lastEvent[FTS_EVENT_BYTES];
+     // stage 3
+     struct rmi_dev rmi;
+     struct ftb_map map;
+@@ -184,12 +206,10 @@ struct Out {
+ void logRow(unsigned i) {if (enchilada_touch_rows[i][0]) IOLog("enchilada-touch: %s\n", enchilada_touch_rows[i]);}
+ 
+ void summary(const Session &s) {
+-    const struct rmi_dev &r = s.rmi;
+     Out o(native_touch_rows[0], sizeof native_touch_rows[0]);
+     o.add("TCH enchilada s%u/%u st%u e%d ack%d", native_touch_stage_done, native_touch_stage_req, native_touch_step, native_touch_error,
+           s.ackRc);
+-    if (native_touch_stage_done >= 3) o.add(" pdt%c f12 %ux%u%s", r.pdt_mode == RMI_PDT_FALLBACK ? 'F' : 'S', s.map.max_x, s.map.max_y,
+-                                            r.f12_hardcoded ? " hc" : "");
++    if (native_touch_stage_done >= 3) o.add(" fts rdy%u ev%u map%ux%u", s.ftsReady, s.ftsEvents, s.map.max_x, s.map.max_y);
+     o.add(" fr%u c%u dn%u %d,%d err%u hid%u open%u", native_touch_frames, native_touch_contacts, native_touch_downs,
+           native_touch_last_x, native_touch_last_y, s.busErrors, native_touch_hid_reports,
+           &native_hid_touch_service ? native_hid_touch_service[1] : 0);
+@@ -342,6 +362,119 @@ static Rail railPower(Session &s) {
+ void pinWrite(Session &s, unsigned pin, uint32_t ctl) {wr32(s.pin[pin].va, 0, ctl);}
+ void pinOut(Session &s, unsigned pin, bool high) {wr32(s.pin[pin].va, 4, high ? FTB_IO_OUT : 0);}
+ 
++// ---- I2C in software on the two touch pins ----
++// Mi 8 Pro: this serial engine has its FIFO interface fused off (GI2C_ERR_NOTSUP on the phone), so the engine could only be used
++// through GPI DMA. The pins are driven as open-drain GPIOs instead: low by enabling the output (its level is held at 0), high by
++// releasing it to the pull-up. The controller may stretch the clock, so every rising SCL waits for the line.
++void busSda(Session &s, bool high) {pinWrite(s, kSda, high ? s.busOpen : s.busLow);}
++void busSclLow(Session &s) {pinWrite(s, kScl, s.busLow);}
++bool busSclHigh(Session &s) {
++    pinWrite(s, kScl, s.busOpen);
++    for (unsigned i = 0; i < 5000; i++) {
++        if (rd32(s.pin[kScl].va, 4) & FTB_IO_IN) return true;
++        IODelay(1);
++    }
++    return false;
++}
++void busWait(Session &s) {IODelay(s.opt.gpioUs);}
++bool busSdaRead(Session &s) {return (rd32(s.pin[kSda].va, 4) & FTB_IO_IN) != 0;}
++bool busStart(Session &s) {
++    busSda(s, true);
++    busWait(s);
++    if (!busSclHigh(s)) return false;
++    busWait(s);
++    busSda(s, false);
++    busWait(s);
++    busSclLow(s);
++    busWait(s);
++    return true;
++}
++void busStop(Session &s) {
++    busSda(s, false);
++    busWait(s);
++    (void)busSclHigh(s);
++    busWait(s);
++    busSda(s, true);
++    busWait(s);
++}
++// 0 when the byte was acknowledged, 1 when not, GI2C_ERR_TIMEOUT when the clock never rose.
++int busWriteByte(Session &s, uint8_t value) {
++    for (int bit = 7; bit >= 0; bit--) {
++        busSda(s, (value >> bit) & 1);
++        busWait(s);
++        if (!busSclHigh(s)) return GI2C_ERR_TIMEOUT;
++        busWait(s);
++        busSclLow(s);
++        busWait(s);
++    }
++    busSda(s, true);
++    busWait(s);
++    if (!busSclHigh(s)) return GI2C_ERR_TIMEOUT;
++    busWait(s);
++    const int nack = busSdaRead(s) ? 1 : 0;
++    busSclLow(s);
++    busWait(s);
++    return nack;
++}
++int busReadByte(Session &s, uint8_t *value, bool last) {
++    uint8_t in = 0;
++    busSda(s, true);
++    for (int bit = 7; bit >= 0; bit--) {
++        busWait(s);
++        if (!busSclHigh(s)) return GI2C_ERR_TIMEOUT;
++        busWait(s);
++        in = static_cast<uint8_t>((in << 1) | (busSdaRead(s) ? 1 : 0));
++        busSclLow(s);
++    }
++    busSda(s, last);
++    busWait(s);
++    if (!busSclHigh(s)) return GI2C_ERR_TIMEOUT;
++    busWait(s);
++    busSclLow(s);
++    busSda(s, true);
++    busWait(s);
++    *value = in;
++    return 0;
++}
++// A controller left mid-byte holds SDA low: clock it out, then a STOP.
++void busRecover(Session &s) {
++    busSda(s, true);
++    for (unsigned i = 0; i < 9 && !busSdaRead(s); i++) {
++        busSclLow(s);
++        busWait(s);
++        (void)busSclHigh(s);
++        busWait(s);
++    }
++    busStop(s);
++}
++int busWriteMessage(Session &s, uint8_t address, const uint8_t *data, size_t length) {
++    int rc = busWriteByte(s, static_cast<uint8_t>(address << 1));
++    if (rc) return rc == 1 ? GI2C_ERR_ADDR_NACK : rc;
++    for (size_t i = 0; i < length; i++) {
++        rc = busWriteByte(s, data[i]);
++        if (rc) return rc == 1 ? GI2C_ERR_DATA_NACK : rc;
++    }
++    return 0;
++}
++int busWrite(Session &s, uint8_t address, const uint8_t *data, size_t length) {
++    if (!busStart(s)) return GI2C_ERR_TIMEOUT;
++    const int rc = busWriteMessage(s, address, data, length);
++    busStop(s);
++    return rc;
++}
++int busWriteRead(Session &s, uint8_t address, const uint8_t *tx, size_t txLength, uint8_t *rx, size_t rxLength) {
++    if (!busStart(s)) return GI2C_ERR_TIMEOUT;
++    int rc = busWriteMessage(s, address, tx, txLength);
++    if (!rc && !busStart(s)) rc = GI2C_ERR_TIMEOUT;
++    if (!rc) {
++        rc = busWriteByte(s, static_cast<uint8_t>((address << 1) | 1));
++        if (rc == 1) rc = GI2C_ERR_ADDR_NACK;
++    }
++    for (size_t i = 0; !rc && i < rxLength; i++) rc = busReadByte(s, &rx[i], i + 1 == rxLength);
++    busStop(s);
++    return rc;
++}
++
+ bool enable(Session &s) {
+     native_touch_step = 2;
+     Out o(enchilada_touch_rows[3], sizeof enchilada_touch_rows[3]);
+@@ -362,21 +495,27 @@ bool enable(Session &s) {
+     if (s.xoLevel < 0) {o.add(" no 19.2MHz DFS level"); fail(21, -22); return false;}
+     // Pins: the I2C pair to qup12 (2 mA, no bias, as qupv3_se12_i2c_active); the interrupt an input with pull-up (ts_default_pins);
+     // the 1.8 V enable and reset outputs, the level written before the output is enabled.
+-    pinWrite(s, kSda, ftb_pin_cfg(FTB_FUNC_QUP12, 2, FTB_PULL_NONE, 0));
+-    pinWrite(s, kScl, ftb_pin_cfg(FTB_FUNC_QUP12, 2, FTB_PULL_NONE, 0));
++    // The I2C pair as open-drain GPIOs: the output level is 0 before any output is enabled, so enabling one only ever pulls low.
++    s.busOpen = ftb_pin_cfg(FTB_FUNC_GPIO, 2, FTB_PULL_UP, 0);
++    s.busLow = ftb_pin_cfg(FTB_FUNC_GPIO, 2, FTB_PULL_UP, 1);
++    pinOut(s, kSda, false);
++    pinOut(s, kScl, false);
++    pinWrite(s, kSda, s.busOpen);
++    pinWrite(s, kScl, s.busOpen);
+     pinWrite(s, kInt, ftb_pin_cfg(FTB_FUNC_GPIO, 16, FTB_PULL_UP, 0));
+     if (s.opt.power) {
+-        // VDD first: the controller does not answer on the bus until LDO28 is on, and the reset pulse below is only meaningful once
+-        // the part is powered. The 1.8 V enable on GPIO 88 powers the level shifter, not the controller.
++        // Mi 8 Pro: power up as the phone's kernel does, the 1.8 V vdd (a GPIO-enabled regulator, measured low at this point on the
++        // phone, and with it the I2C pull-ups) before the 3.3 V avdd (LDO28), then the reset pulse below. An unpowered controller
++        // holds SCL low: that was the ACK timeout before this.
++        pinOut(s, kVio, true);
++        pinWrite(s, kVio, ftb_pin_cfg(FTB_FUNC_GPIO, 2, FTB_PULL_NONE, 1));
++        IOSleep(FTB_VIO_SETTLE_MS);
+         native_touch_step = 21;
+         s.rail = railPower(s);
+         Out r(enchilada_touch_rows[9], sizeof enchilada_touch_rows[9]);
+         r.add("RAIL rc%d db%llx w%08x tcs%u drv%08x a%08x ctl%08x st%08x n%u", s.rail.rc, s.rail.db, s.rail.dbWord,
+               s.rail.tcs, s.rail.drvId, s.rail.address, s.rail.control, s.rail.status, s.rail.writes);
+         native_touch_step = 22;
+-        pinOut(s, kVio, true);
+-        pinWrite(s, kVio, ftb_pin_cfg(FTB_FUNC_GPIO, 2, FTB_PULL_NONE, 1));
+-        IOSleep(FTB_VIO_SETTLE_MS);
+         // synaptics_driver_s3320.c tpd_hw_pwron: reset high, low, high, 10 ms apart; then the 200 ms startup delay of the DT.
+         pinOut(s, kRst, true);
+         pinWrite(s, kRst, ftb_pin_cfg(FTB_FUNC_GPIO, 16, FTB_PULL_UP, 1));
+@@ -394,74 +533,61 @@ bool enable(Session &s) {
+     s.i2c.se = geni_i2c_io{reinterpret_cast<void *>(s.se.va), ioRd, ioWr, ioDelayUs};
+     s.i2c.wrapper = geni_i2c_io{reinterpret_cast<void *>(s.wrapper.va), ioRd, ioWr, ioDelayUs};
+     s.i2c.poll_limit = 20000;
+-    int r = geni_i2c_init(&s.i2c);
+-    o.add(" fw%04x d%u", s.i2c.info.fw_revision & 0xffff, s.i2c.info.tx_fifo_depth);
+-    if (r) {o.add(" INIT%d", r); fail(23, r); return false;}
+-    r = geni_i2c_set_clock(&s.i2c, static_cast<unsigned>(s.xoLevel), FTB_TCXO_HZ, s.opt.hz);
+-    if (r) {o.add(" CLK%d", r); fail(24, r); return false;}
+-    o.add(" L%d %ukHz", s.xoLevel, s.opt.hz / 1000);
+-    // ACK probe: a one-byte write of the PDT pointer (it only moves the controller's register pointer), up to five times while
+-    // the controller may still be starting.
++    // The engine is only read, for the record: it does not own the pins any more.
++    (void)geni_i2c_read_info(&s.i2c);
++    o.add(" fw%04x if%x sw%uus", s.i2c.info.fw_revision & 0xffff, s.i2c.info.if_disable, s.opt.gpioUs);
++    busRecover(s);
++    // ACK probe: read one event. It is harmless, and the first one after the reset above is normally the ready event.
+     native_touch_step = 25;
+-    const uint8_t pointer = RMI_PDT_START;
++    const uint8_t readEvent = FTS_CMD_READ_EVENT;
++    uint8_t first[FTS_EVENT_BYTES] = {};
+     s.ackRc = GI2C_ERR_ADDR_NACK;
+     for (s.ackTries = 1; s.ackTries <= 5; s.ackTries++) {
+-        s.ackRc = geni_i2c_write(&s.i2c, FTB_I2C_ADDR, &pointer, 1, 1);
++        s.ackRc = busWriteRead(s, FTB_I2C_ADDR, &readEvent, 1, first, sizeof first);
+         if (s.ackRc != GI2C_ERR_ADDR_NACK && s.ackRc != GI2C_ERR_TIMEOUT) break;
+         IOSleep(20);
+     }
+     if (s.ackTries > 5) s.ackTries = 5;
+-    o.add(" ack%d x%u", s.ackRc, s.ackTries);
++    o.add(" ack%d x%u ev%02x", s.ackRc, s.ackTries, first[0]);
+     if (s.ackRc) {
+-        // No ACK: the controller is unpowered (VDD = PM8998 LDO28, an RPMh rail XNU does not drive) or held in reset; a timeout or a
+-        // bus error with the lines low (ios) points at the 1.8 V pull-ups instead.
+         fail(25, s.ackRc);
+-        errorRow(s, s.ackRc == GI2C_ERR_ADDR_NACK ? "no ACK at 0x20 (LDO28 off?)" : "ACK probe failed");
++        errorRow(s, s.ackRc == GI2C_ERR_ADDR_NACK ? "no ACK at 0x49 (LDO28 off?)" : "ACK probe failed");
+         return false;
+     }
+-    s.link = ftb_rmi_link{&s.i2c, FTB_I2C_ADDR, 0};
++    if (first[0] == FTS_EVT_READY) s.ftsReady = 1;
+     return true;
+ }
+ 
+-// ---- stage 3: RMI4 ----
+-bool rmiSetup(Session &s) {
++// ---- stage 3: ST FingerTip ----
++int ftsRead(Session &s, uint8_t *event) {
++    const uint8_t command = FTS_CMD_READ_EVENT;
++    return busWriteRead(s, FTB_I2C_ADDR, &command, 1, event, FTS_EVENT_BYTES);
++}
++int ftsStartScan(Session &s) {
++    const uint8_t command[3] = {FTS_CMD_SCAN_MODE, FTS_SCAN_ACTIVE, static_cast<uint8_t>(s.opt.scan)};
++    return busWrite(s, FTB_I2C_ADDR, command, sizeof command);
++}
++bool ftsSetup(Session &s) {
+     native_touch_step = 3;
+-    struct rmi_dev &r = s.rmi;
+-    const struct rmi_bus bus = {&s.link, ftb_rmi_read, ftb_rmi_write, sleepMs};
+-    rmi_init(&r, &bus);
+-    r.force_fallback = s.opt.pdt == 1;
+-    int rc = rmi_scan_pdt(&r);
+-    {
+-        Out o(enchilada_touch_rows[4], sizeof enchilada_touch_rows[4]);
+-        o.add("FT3 pdt%d %s e9:%02x%02x%02x%02x%02x%02x irq%u/%u", rc, r.pdt_mode == RMI_PDT_FALLBACK ? "fixed" : "scan", r.first_entry[0],
+-              r.first_entry[1], r.first_entry[2], r.first_entry[3], r.first_entry[4], r.first_entry[5], r.irq_count, r.irq_regs);
+-        for (unsigned i = 0; i < r.nfn; i++)
+-            o.add(" F%02x@%x q%x c%x d%x i%u", r.fn[i].number, r.fn[i].entry, r.fn[i].query, r.fn[i].control, r.fn[i].data, r.fn[i].irq_pos);
+-    }
+-    logRow(4);
+-    if (rc) {fail(31, rc); errorRow(s, "PDT"); return false;}
+     Out o(enchilada_touch_rows[5], sizeof enchilada_touch_rows[5]);
+-    rc = rmi_f01_read_info(&r);
+-    o.add("FT3 f01 st%02x m%02x q1%02x id'%s'", r.status, r.manufacturer, r.query1, r.product_id);
+-    if (rc) {o.add(rc == RMI_ERR_BOOTLOADER ? " BOOTLOADER" : " ERR%d", rc); fail(32, rc); errorRow(s, "F01 info"); return false;}
+-    if (s.opt.rmiReset) {
+-        rc = rmi_f01_reset(&r, FTB_STARTUP_MS);
+-        if (!rc) rc = rmi_f01_read_info(&r);
+-        o.add(" reset%d st%02x", rc, r.status);
+-        if (rc) {fail(32, rc); errorRow(s, "F01 reset"); return false;}
++    uint8_t event[FTS_EVENT_BYTES] = {};
++    int rc = 0;
++    // The ready event may already have been taken by the ACK probe; otherwise allow the controller a second to finish booting.
++    for (unsigned i = 0; i < 100 && !s.ftsReady; i++) {
++        rc = ftsRead(s, event);
++        if (rc) break;
++        if (event[0] == FTS_EVT_READY) s.ftsReady = 1;
++        else if (event[0] == FTS_EVT_NONE) IOSleep(10);
+     }
+-    rc = rmi_f01_configure(&r, 1);
+-    o.add(" c0 %02x>%02x ien%02x", r.ctrl0_before, r.ctrl0, r.irq_enable);
+-    if (rc) {o.add(" ERR%d", rc); fail(33, rc); errorRow(s, "F01 configure"); return false;}
+-    rc = rmi_f12_probe(&r);
+-    o.add(" | f12 q0%02x %s d1 %u@%u n%u rd%u max%ux%u", r.f12_query0, r.f12_hardcoded ? "hardcoded" : "desc", r.data1_size,
+-          r.data1_offset, r.objects, r.read_size, r.max_x, r.max_y);
+-    if (rc) {o.add(" ERR%d", rc); fail(34, rc); errorRow(s, "F12"); return false;}
+-    // Axis maxima: the boot arguments, else Control 8, else the panel size.
+-    s.map.max_x = s.opt.maxX ? s.opt.maxX : r.max_x;
+-    s.map.max_y = s.opt.maxY ? s.opt.maxY : r.max_y;
++    o.add("FT3 fts rdy%u last%02x rc%d", s.ftsReady, event[0], rc);
++    if (rc) {fail(31, rc); errorRow(s, "event read"); return false;}
++    rc = ftsStartScan(s);
++    o.add(" scan%02x rc%d", s.opt.scan, rc);
++    if (rc) {fail(33, rc); errorRow(s, "scan on"); return false;}
++    s.map.max_x = s.opt.maxX ? s.opt.maxX : FTS_MAX_X;
++    s.map.max_y = s.opt.maxY ? s.opt.maxY : FTS_MAX_Y;
+     s.map.orient = s.opt.orient;
+-    o.add(" map%ux%u o%u", s.map.max_x ? s.map.max_x : FTB_DEFAULT_MAX_X, s.map.max_y ? s.map.max_y : FTB_DEFAULT_MAX_Y, s.map.orient);
++    o.add(" map%ux%u o%u", s.map.max_x, s.map.max_y, s.map.orient);
+     return true;
+ }
+ 
+@@ -511,6 +637,86 @@ extern "C" void native_touch_set_sink(void (*sink)(void *), void *context) {
+     __atomic_store_n(&gTouchSink, sink, __ATOMIC_RELEASE);
+ }
+ 
++// NativeHidInput registers here for the side buttons; this definition replaces the weak no-op of HidInputStubs.c.
++extern "C" { volatile uint32_t native_buttons_driver, native_buttons_reports, native_buttons_result; }
++static void (*gButtonSink)(void *, uint32_t);
++static void *gButtonSinkContext;
++extern "C" void native_buttons_set_sink(void (*sink)(void *, uint32_t), void *context) {
++    gButtonSinkContext = context;
++    __atomic_store_n(&gButtonSink, sink, __ATOMIC_RELEASE);
++}
++
++namespace {
++bool pmbRead(const ButtonState &b, uint16_t apid, uint16_t addr, uint8_t &out, uint32_t &status) {
++    const uint32_t channel = PMB_CHANNEL(apid);
++    wr32(b.obs.va, channel + PMB_REG_CMD, pmb_read_cmd(addr));
++    for (unsigned i = 0; i < 200; i++) {
++        status = rd32(b.obs.va, channel + PMB_REG_STATUS);
++        if (status & PMB_STATUS_DONE) {
++            if (status & PMB_STATUS_ERRORS) return false;
++            out = static_cast<uint8_t>(rd32(b.obs.va, channel + PMB_REG_RDATA0));
++            return true;
++        }
++        ioDelayUs(nullptr, 1);
++    }
++    return false;
++}
++
++// Version 5 can map one PPID to several APIDs; the first that answers a read for this EE is the one used.
++uint16_t pmbFindApid(ButtonState &b, uint16_t ppid, uint16_t probe, uint8_t &value) {
++    for (unsigned n = 0; n < PMB_APID_COUNT; n++) {
++        const uint32_t map = rd32(b.core.va, PMB_REG_APID_MAP(n));
++        if (!map || PMB_MAP_PPID(map) != ppid) continue;
++        ++b.mapped;
++        uint32_t status = 0;
++        if (pmbRead(b, static_cast<uint16_t>(n), probe, value, status)) return static_cast<uint16_t>(n);
++        b.lastStatus = status;
++    }
++    return PMB_NO_APID;
++}
++
++void buttonsSetup(ButtonState &b) {
++    b.ponApid = b.gpioApid = PMB_NO_APID;
++    if (!mapRegion(PMB_CORE_PA, PMB_CORE_SIZE, b.core) || !mapRegion(PMB_OBS_PA, PMB_OBS_SIZE, b.obs)) {b.error = 1; return;}
++    b.version = rd32(b.core.va, PMB_REG_VERSION);
++    if (b.version < PMB_MIN_VERSION) {b.error = 2; return;}
++    b.ponApid = pmbFindApid(b, PMB_PON_PPID, PMB_PON_RT_STS, b.ponRt);
++    if (b.ponApid == PMB_NO_APID) {b.error = 3; return;}
++    b.gpioApid = pmbFindApid(b, PMB_GPIO6_PPID, PMB_GPIO6_RT_STS, b.gpioRt);
++    if (b.gpioApid != PMB_NO_APID) {
++        uint32_t status = 0;
++        pmbRead(b, b.gpioApid, PMB_GPIO6_MODE, b.gpioMode, status);
++        pmbRead(b, b.gpioApid, PMB_GPIO6_EN, b.gpioEn, status);
++        b.gpioTrusted = (b.gpioRt & PMB_GPIO_LEVEL) != 0;
++    }
++    b.up = true;
++}
++
++void buttonsPoll(ButtonState &b) {
++    if (!b.up) return;
++    uint8_t pon = b.ponRt, gpio = b.gpioRt;
++    uint32_t status = 0;
++    if (!pmbRead(b, b.ponApid, PMB_PON_RT_STS, pon, status)) {++b.readErrors; b.lastStatus = status; return;}
++    if (b.gpioApid != PMB_NO_APID) {
++        if (!pmbRead(b, b.gpioApid, PMB_GPIO6_RT_STS, gpio, status)) {++b.readErrors; b.lastStatus = status; return;}
++        if (gpio & PMB_GPIO_LEVEL) b.gpioTrusted = true;
++    }
++    b.ponRt = pon;
++    b.gpioRt = gpio;
++    b.lastStatus = status;
++    const uint32_t keys = pmb_decode(pon, gpio, b.gpioTrusted);
++    if (!pmb_debounce_step(&b.debounce, keys)) return;
++    const uint32_t pressed = keys & ~b.held;
++    if (pressed & PMB_KEY_POWER) ++b.presses[0];
++    if (pressed & PMB_KEY_VOLUP) ++b.presses[1];
++    if (pressed & PMB_KEY_VOLDOWN) ++b.presses[2];
++    b.held = keys;
++    ++b.changes;
++    if (void (*sink)(void *, uint32_t) = __atomic_load_n(&gButtonSink, __ATOMIC_ACQUIRE)) sink(gButtonSinkContext, keys);
++    IOLog("enchilada-touch: buttons %x (pon %02x gpio %02x)\n", keys, pon, gpio);
++}
++}  // namespace
++
+ namespace {
+ // The display mapping now: the identity until NativeLegacyDisplay has published its logical mode (or with enchilada-touch-view=0).
+ void readView(const Session &s, struct ftb_view &v) {
+@@ -587,6 +793,16 @@ void playSwipe(Session &s, unsigned frame) {
+     publish(s, 1, c);
+ }
+ void loopRow(const Session &s) {
++    const ButtonState &b = s.buttons;
++    Out k(enchilada_touch_rows[10], sizeof enchilada_touch_rows[10]);
++    k.add("FT6 btn e%u ver%08x map%u pon%u/%02x gp%u/%02x m%02x en%02x tr%u st%x rerr%u p%u/%u/%u ch%u sink%u drv%u rp%u rs%x", b.error, b.version, b.mapped,
++          static_cast<unsigned>(b.ponApid), static_cast<unsigned>(b.ponRt), static_cast<unsigned>(b.gpioApid), static_cast<unsigned>(b.gpioRt),
++          static_cast<unsigned>(b.gpioMode), static_cast<unsigned>(b.gpioEn), b.gpioTrusted ? 1u : 0u, b.lastStatus, b.readErrors,
++          b.presses[0], b.presses[1], b.presses[2], b.changes, __atomic_load_n(&gButtonSink, __ATOMIC_ACQUIRE) ? 1u : 0u,
++          native_buttons_driver, native_buttons_reports, native_buttons_result);
++    Out a(enchilada_touch_rows[11], sizeof enchilada_touch_rows[11]);
++    a.add("FT7 staged st%d d%d f%d mb%d fail%d err%d zva%u", native_staged_apps_stage, native_staged_apps_dirs, native_staged_apps_files,
++          native_staged_apps_mib, native_staged_apps_failed, native_staged_apps_error, native_zva_emulated);
+     Out o(enchilada_touch_rows[6], sizeof enchilada_touch_rows[6]);
+     o.add("FT4 polls%u irq%u fr%u cf%u c%u dn%u lb%u/%u raw%d,%d ext x%d..%d y%d..%d st%02x err%u back%u recfg%u gpio%u/%u",
+           s.polls, s.irqHits, s.frames, enchilada_touch_contact_frames, native_touch_contacts, native_touch_downs,
+@@ -646,11 +862,11 @@ static bool armTouchIrq(Session &s) {
+ 
+ static void pollLoop(Session &s) {
+     native_touch_step = 4;
+-    struct rmi_dev &r = s.rmi;
+     const unsigned period = 1000 / s.opt.rate;
+     const bool irqArmed = s.opt.irq && armTouchIrq(s);
+     uint32_t seen = gTouchIrqEvents;
+     unsigned failures = 0, rowTick = 0;
++    buttonsSetup(s.buttons);
+     for (;;) {
+         native_touch_loop_step = 1;
+         ++s.polls;
+@@ -669,30 +885,52 @@ static void pollLoop(Session &s) {
+                 if (phase < 4000) playSwipe(s, phase / 40);
+             }
+         }
+-        uint8_t status = 0;
+-        uint32_t irq = 0;
+-        int rc = rmi_read_irq(&r, &status, &irq);
+-        if (!rc) {
+-            s.lastStatus = status;
+-            s.lastIrq = irq;
+-            if (status & RMI_F01_STATUS_UNCONFIGURED) {
+-                // The controller reset itself (or lost power): configure it again and drop the contacts it no longer reports.
++        // Drain the event FIFO, then report once if anything changed.
++        int rc = 0;
++        bool changed = false;
++        native_touch_loop_step = 2;
++        buttonsPoll(s.buttons);
++        // The interrupt line is low while events wait, so an idle panel costs one register read. One unconditional read a second
++        // covers a missed level.
++        const bool pending = s.opt.pollAll || !(rd32(s.pin[kInt].va, 4) & FTB_IO_IN) || !(rowTick % s.opt.rate);
++        for (unsigned i = 0; pending && i < FTS_FIFO_DEPTH; i++) {
++            uint8_t event[FTS_EVENT_BYTES];
++            rc = ftsRead(s, event);
++            if (rc || event[0] == FTS_EVT_NONE) break;
++            ++s.ftsEvents;
++            ++s.irqHits;
++            s.lastStatus = event[0];
++            memcpy(s.lastEvent, event, sizeof event);
++            if (event[0] == FTS_EVT_READY) {
++                // The controller reset itself: sensing is off again and every contact it knew about is gone.
+                 ++s.reconfigs;
+-                rc = rmi_f01_configure(&r, 1);
+-                publish(s, 0, nullptr);
++                if (s.fts.active) changed = true;
++                fts_tracker_clear(&s.fts);
++                rc = ftsStartScan(s);
++                if (rc) break;
++            } else if (event[0] == FTS_EVT_ERROR) {
++                ++s.ftsErrors;
++            } else if (fts_event_apply(&s.fts, event)) {
++                changed = true;
+             }
+         }
+-        if (!rc && ((irq & r.abs_mask) || s.opt.pollAll)) {
+-            native_touch_loop_step = 2;
+-            if (irq & r.abs_mask) ++s.irqHits;
+-            struct rmi_contact c[RMI_MAX_OBJECTS];
+-            const int n = rmi_f12_read_contacts(&r, c, RMI_MAX_OBJECTS);
+-            if (n >= 0) {
+-                ++s.frames;
+-                native_touch_frames = native_touch_frames + 1;
+-                native_touch_valid = native_touch_valid + 1;
+-                publish(s, static_cast<unsigned>(n), c);
+-            } else rc = n;
++        if (changed) {
++            struct rmi_contact c[TOUCH_SLOTS];
++            unsigned n = 0;
++            for (unsigned id = 0; id < FTS_MAX_IDS && n < TOUCH_SLOTS; id++) {
++                if (!(s.fts.active & (1u << id))) continue;
++                c[n] = rmi_contact{};
++                c[n].id = static_cast<decltype(c[n].id)>(id);
++                c[n].type = s.fts.type[id];
++                c[n].z = 40;
++                c[n].x = s.fts.x[id];
++                c[n].y = s.fts.y[id];
++                ++n;
++            }
++            ++s.frames;
++            native_touch_frames = native_touch_frames + 1;
++            native_touch_valid = native_touch_valid + 1;
++            publish(s, n, c);
+         }
+         if (rc) {
+             ++s.busErrors;
+@@ -718,7 +956,12 @@ static void pollLoop(Session &s) {
+ 
+ static void readOptions(Options &o) {
+     o.hz = FTB_I2C_HZ; o.power = 1; o.pdt = 0; o.rmiReset = 0; o.maxX = o.maxY = 0; o.orient = 0; o.rate = 100; o.irq = 0; o.pollAll = 0;
+-    o.letterbox = 0; o.view = 1;
++    o.letterbox = 0; o.view = 1; o.scan = FTS_SCAN_MULTI_TOUCH;
++    PE_parse_boot_argn("fts-touch-scan", &o.scan, sizeof o.scan);
++    o.scan &= 0xff;
++    o.gpioUs = 3;
++    PE_parse_boot_argn("fts-touch-i2c-us", &o.gpioUs, sizeof o.gpioUs);
++    if (o.gpioUs < 1 || o.gpioUs > 50) o.gpioUs = 3;
+     // enchilada-touch-letterbox=1 drops a contact that begins outside the displayed image (default 0: clamp it to the image edge, so a
+     // swipe up from the black bar below the image is a swipe from the bottom edge); enchilada-touch-view=0 ignores the display's
+     // logical mode and maps onto the whole panel.
+@@ -769,7 +1012,7 @@ static void touchThread(void *, wait_result_t) {
+         native_touch_stage_done = 2;
+         summary(*s);
+         if (s->opt.stage < 3) break;
+-        ok = rmiSetup(*s);
++        ok = ftsSetup(*s);
+         logRow(5);
+         if (!ok) break;
+         native_touch_stage_done = 3;
+diff --git a/package/EnchiladaTouchRpmh.h b/package/EnchiladaTouchRpmh.h
+index c78fa48..2ec0130 100644
+--- a/package/EnchiladaTouchRpmh.h
++++ b/package/EnchiladaTouchRpmh.h
+@@ -36,7 +36,8 @@ extern "C" {
+ #define FTB_CMD_DB_MAGIC 0x0c0330dbu
+ #define FTB_RPMH_MAX_LEVELS 16u
+ // PM8998 LDO28: the DT's init is 0x2b9440 uV (2.856 V) in mode 2, the same two values Linux sends.
+-#define FTB_LDO28_MV 2856u
++// Mi 8 Pro: this phone's device tree holds pm8998_l28 at exactly 3.3 V (min = max = 3300000 uV), not the OnePlus 2.856 V.
++#define FTB_LDO28_MV 3300u
+ #define FTB_LDO28_MODE 2u
+ 
+ typedef struct {
+diff --git a/package/HidInputProbe.cpp b/package/HidInputProbe.cpp
+index 6372075..36a5eda 100644
+--- a/package/HidInputProbe.cpp
++++ b/package/HidInputProbe.cpp
+@@ -12,6 +12,7 @@
+ extern kmod_info_t g_kernel_kmod_info;
+ extern "C" void native_hid_static_init(void) __asm__("__GLOBAL__sub_I_NativeHidInput.cpp");
+ extern "C" IOService *native_hid_input_allocate(void);
++extern "C" IOService *native_hid_buttons_allocate(void);
+ extern "C" IOService *native_hid_touch_allocate(void);
+ extern "C" {
+ extern kern_return_t OSKextLoadKextWithIdentifier(const char *);
+@@ -227,6 +228,12 @@ void native_hid_input_probe(void) {
+                         bool touchStarted=touch && touch->metaCast("IOHIDDevice") && touch->init() && touch->attach(resource) && touch->start(resource);
+                         if(!touchStarted && touch){touch->detach(resource);OSSafeReleaseNULL(touch);}
+                     }
++                    // The hardware buttons as a separate Consumer Control device (primary usage page 0x0c, Built-In).
++                    if(started) {
++                        IOService *buttons=native_hid_buttons_allocate();
++                        bool buttonsStarted=buttons && buttons->metaCast("IOHIDDevice") && buttons->init() && buttons->attach(resource) && buttons->start(resource);
++                        if(!buttonsStarted && buttons){buttons->detach(resource);OSSafeReleaseNULL(buttons);}
++                    }
+                     // The offline devices live for this bounded boot. Its
+                     // service attachment and timer remain genuine live objects.
+                 }
+diff --git a/package/KeyStoreProbe.cpp b/package/KeyStoreProbe.cpp
+index 2f4f8c3..c53e275 100644
+--- a/package/KeyStoreProbe.cpp
++++ b/package/KeyStoreProbe.cpp
+@@ -64,6 +64,22 @@ static void aks_publish(void) {
+     for (; i < 47; ++i) boot_progress_ext[1][i] = ' ';
+     boot_progress_ext[1][47] = 0;
+ }
++// The stable identity NativeKeyStoreEvents derives its software wrapping key from: this board's platform seed in the ADT.
++// Returning 0 (no seed, or an all-zero one) makes wrapping fail rather than use a guessable key.
++size_t native_aks_device_id(uint8_t *out, size_t capacity) {
++    IORegistryEntry *node = IORegistryEntry::fromPath("/chosen", gIODTPlane);
++    if (!node) return 0;
++    size_t copied = 0;
++    OSData *seed = OSDynamicCast(OSData, node->getProperty("unique-chip-id"));
++    if (seed && seed->getLength() >= 8 && seed->getLength() <= capacity) {
++        memcpy(out, seed->getBytesNoCopy(), seed->getLength());
++        for (unsigned index = 0; index < seed->getLength(); ++index) {
++            if (out[index]) { copied = seed->getLength(); break; }
++        }
++    }
++    node->release();
++    return copied;
++}
+ void native_aks_opened(void) {
+     native_aks_opens = native_aks_opens + 1;
+     aks_publish();
+diff --git a/scripts/build-enchilada-storage.py b/scripts/build-enchilada-storage.py
+index c84652a..988cfde 100644
+--- a/scripts/build-enchilada-storage.py
++++ b/scripts/build-enchilada-storage.py
+@@ -38,18 +38,27 @@ def main():
+         previous = ROOT.parent / 'kernel/kernel.macho'
+         if previous.is_file():
+             candidate = str(previous)
++    original = ROOT.parents[1] / 'ipsw/21H461/kernelcache.decompressed'
++    # A first build has no earlier prelink. audit-storage-interface-static.py reads the pinned kernelcache itself at the
++    # [kernel.prelink] slide for that case; the platform power step still needs a real candidate, so it waits for pass 2.
++    first_build = not candidate and original.is_file()
++    if first_build:
++        candidate = str(original)
+     if not candidate or not Path(candidate).is_file():
+         raise SystemExit('ENCHILADA_STORAGE_CANDIDATE must name a prelinked enchilada kernel.macho with its kernel.json beside it')
+     audit = os.environ.get('ENCHILADA_STORAGE_AUDIT')
+-    if not audit and not Path(candidate).with_suffix('.json').is_file():
++    if not first_build and not audit and not Path(candidate).with_suffix('.json').is_file():
+         raise SystemExit(f'{candidate} has no prelink report beside it; supply ENCHILADA_STORAGE_AUDIT for it')
+     prelink = ROOT / 'build/native-prelink'
+     prelink.mkdir(parents=True, exist_ok=True)
+-    for suffix in ('.macho', '.json'):
+-        source = Path(candidate).with_suffix(suffix)
+-        if source.is_file():
+-            shutil.copyfile(source, prelink / f'native-owner-ufs-rootauth3-candidate{suffix}')
+-    original = ROOT.parents[1] / 'ipsw/21H461/kernelcache.decompressed'
++    if not first_build:
++        # build-sheng-platform-power.py reads build/native-prelink, the audit it runs reads build/xnu-prelink.
++        for directory in (prelink, ROOT / 'build/xnu-prelink'):
++            directory.mkdir(parents=True, exist_ok=True)
++            for suffix in ('.macho', '.json'):
++                source = Path(candidate).with_suffix(suffix)
++                if source.is_file():
++                    shutil.copyfile(source, directory / f'native-owner-ufs-rootauth3-candidate{suffix}')
+     if original.is_file():
+         staged = ROOT / '.cache/firmware/kernelcache.macho/kernelcache.release.ipad7.decompressed'
+         staged.parent.mkdir(parents=True, exist_ok=True)
+@@ -61,6 +70,10 @@ def main():
+         (ROOT / 'build/storage-abi').mkdir(parents=True, exist_ok=True)
+         shutil.copyfile(audit, ROOT / 'build/storage-abi/interface-audit.json')
+         print(f'storage audit: {audit} (candidate {recorded[:16]})', flush=True)
++    elif original.is_file():
++        # The pinned kernelcache also on later passes: this audit finds no dispatch table in a kernel prelinked here
++        # (0 candidates), and its addresses are module-relative, so the source of the original module does not matter.
++        run(ROOT / 'scripts/audit-storage-interface-static.py', '--prelinked', str(original), '--slide=-0x1000000')
+     else:
+         run(ROOT / 'scripts/audit-storage-interface-static.py', '--prelinked', candidate)
+     run(ROOT / 'scripts/build-arm-driver.py', 'NativeVirtioBlock', '--verified-root', '--verified-root-bundle')
