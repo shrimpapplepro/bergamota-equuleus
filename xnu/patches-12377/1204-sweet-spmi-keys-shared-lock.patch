@@ -1,0 +1,69 @@
+PMIC bus race: the key poll (sweet_keys.c, every 20 ms, own mapping, no lock) and the battery/RTC/charger reads (sweet_spmi.c) ran observer reads on the same arbiter at the same time, and a read that overlapped got the other one's byte. On the Mi 8 Pro 3 % of the raw RTC reads were wrong (a byte replaced by the key state, 0x00 or 0x01), so the dual-boot clock offset was stored from a bad value. The keys now take the sweet_spmi.c lock around each read.
+
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -389,6 +389,29 @@
+ }
+ 
+ /*
++ * Patch 1204: the arbiter runs one observer read per EE at a time. sweet_keys.c polls the PON and GPIO blocks every
++ * 20 ms through its own mapping and took no lock: a read here that overlapped one of those came back with the key's
++ * byte (0x00 or 0x01) in place of its own. Measured on the Mi 8 Pro: 3 % of the RTC reads were wrong, so the wall
++ * clock offset was stored from a bad raw value (and a key read can get a battery or RTC byte the same way). The keys
++ * take this lock around each read now. False = not initialized: the caller reads without it, as before.
++ */
++bool
++sweet_spmi_bus_take(bool *got)
++{
++	if (sweet_spmi_init() != 0 && !sp_lock) {
++		return false;
++	}
++	*got = sp_take();
++	return true;
++}
++
++void
++sweet_spmi_bus_put(bool got)
++{
++	sp_put(got);
++}
++
++/*
+  * Poco F1 wall clock (patch 0245). The PM8998 RTC (SID 0, RTC_RW 0x60) counts seconds through reboots, but the
+  * application processor cannot set it (TZ-owned; Android keeps an offset in /data). iOS started every boot in 1970
+  * and jumped to 2026 when timed got network time; daemons with time-windowed history (coreduetd's Biome ingestion)
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -19,6 +19,8 @@
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern void sweet_hid_key(int key, int down);
+ extern void sweet_touch_wake(void); /* patch 0261: Mi 8 Pro touch re-check on the power key */
++extern bool sweet_spmi_bus_take(bool *got); /* patch 1204: one observer read at a time, shared with sweet_spmi.c */
++extern void sweet_spmi_bus_put(bool got);
+ void sweet_keys_init(void);
+ 
+ #define KEYS_CORE_PA     0x0c440000u
+@@ -63,9 +65,23 @@
+ 	return found;
+ }
+ 
++static bool keys_read_locked(uint16_t apid, uint16_t addr, uint8_t *out);
++
+ static bool
+ keys_read(uint16_t apid, uint16_t addr, uint8_t *out)
+ {
++	bool got = false;
++	bool have = sweet_spmi_bus_take(&got);
++	bool ok = keys_read_locked(apid, addr, out);
++	if (have) {
++		sweet_spmi_bus_put(got);
++	}
++	return ok;
++}
++
++static bool
++keys_read_locked(uint16_t apid, uint16_t addr, uint8_t *out)
++{
+ 	if (apid == KEYS_NO_APID) {
+ 		return false;
+ 	}
