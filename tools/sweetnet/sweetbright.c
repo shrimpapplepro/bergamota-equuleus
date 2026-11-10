@@ -7,7 +7,8 @@
  *   sweetbright get            print backboardd's level and the kernel's request / applied values
  *   sweetbright set N          kernel request N (2..1023), for testing
  *   sweetbright watch          print backboardd's level when it changes (Ctrl-C), changes nothing
- *   sweetbright daemon [G]     follow the slider: panel = 2 + 1021 * level^G (G default 2.0), polled every 100 ms
+ *   sweetbright daemon [G]     follow the slider: panel = 8 + 1015 * level^G (G default 2.0), polled every 100 ms;
+ *                              the floor of 8 keeps the panel readable at the bottom of the slider
  *
  * Run as root (the sysctl is root-writable). Job org.sweet.sweetbright runs `daemon`.
  */
@@ -108,8 +109,8 @@ main(int argc, char **argv)
 		}
 		if (kget("kern.sweet_fb_brightness") == -9) {
 			stamp();
-			fprintf(stderr, "no kern.sweet_fb_brightness: kernel without patch 0263\n");
-			return 1;
+			fprintf(stderr, "no kern.sweet_fb_brightness: kernel without patch 0263; nothing to do\n");
+			return 0;       /* a clean exit: the job (KeepAlive SuccessfulExit false) does not restart it */
 		}
 		float last = -2.0f;
 		int sent = -1;
@@ -118,7 +119,7 @@ main(int argc, char **argv)
 		for (;;) {
 			float v = get();
 			if (v >= 0.0f && v <= 1.0f && fabsf(v - last) > 0.0005f) {
-				int lvl = 2 + (int)lround(1021.0 * pow((double)v, g));
+				int lvl = 8 + (int)lround(1015.0 * pow((double)v, g));
 				if (lvl != sent && kset(lvl) == 0) {
 					sent = lvl;
 				}

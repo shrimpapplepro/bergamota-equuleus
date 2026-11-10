@@ -558,6 +558,26 @@ def sweetclock(root):
     print('sweetclock: /usr/local/bin/sweetclock, job', SWEETCLOCK_LABEL)
 
 
+SWEETBRIGHT_LABEL = 'org.sweet.sweetbright'
+
+
+def sweetbright(root):
+    """/usr/local/bin/sweetbright and its job (KeepAlive unless it exits cleanly, as root): backboardd's brightness level
+    (the Settings slider) to sysctl kern.sweet_fb_brightness, which the Mi 8 Pro kernel sends to its AMOLED as DCS 0x51
+    (patch 0263, tools/sweetnet/sweetbright.c). On a kernel without that sysctl it exits 0 at once. Skipped when not built."""
+    src = find_sweetnet('ios18/sweetbright')
+    if not src:
+        print('sweetbright: not built (tools/sweetnet/build.sh): skipped')
+        note_skip('sweetbright', not_built())
+        return
+    install_file(src, os.path.join(root, 'usr/local/bin/sweetbright'))
+    add_job(root, SWEETBRIGHT_LABEL, {
+        'Label': SWEETBRIGHT_LABEL, 'ProgramArguments': ['/usr/local/bin/sweetbright', 'daemon'], 'RunAtLoad': True,
+        'KeepAlive': {'SuccessfulExit': False}, 'ThrottleInterval': 10, 'UserName': 'root',
+        'StandardErrorPath': '/private/var/log/sweetbright.log'})
+    print('sweetbright: /usr/local/bin/sweetbright, job', SWEETBRIGHT_LABEL)
+
+
 def find_container(root, kind, identifier):
     for meta in glob.glob(os.path.join(root, 'private/var/containers', kind, '*',
                                        '.com.apple.mobile_container_manager.metadata.plist')):
@@ -1403,6 +1423,7 @@ def main():
     sweetreboot(root)
     sweetmetrics(root)
     sweetclock(root)
+    sweetbright(root)
     ssh(root)
     auto(root)        # staged apps, bluetooth, PosterBoard, first-boot job (opt-outs: RENEGADE_NO_*)
     activation(root)

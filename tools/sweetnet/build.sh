@@ -39,6 +39,10 @@ if [ "${IOS18:-1}" = 1 ]; then
 	xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -O2 -Wall "$here/sweetclock.c" -o "$out18/sweetclock"
 	codesign -s - -f --entitlements "$here/entitlements.plist" "$out18/sweetclock"
 	python3 -I "$pacstrip" --sign "$out18/sweetclock"
+	# sweetbright: brightness slider to the Mi 8 Pro AMOLED (kernel patch 0263, root_tweaks18.sweetbright)
+	xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -O2 -Wall "$here/sweetbright.c" -o "$out18/sweetbright"
+	codesign -s - -f --entitlements "$here/entitlements.plist" "$out18/sweetbright"
+	python3 -I "$pacstrip" --sign "$out18/sweetbright"
 	# sweetdur: UFS/HFS durability test (kernel patch 0221)
 	xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -O2 -Wall "$here/sweetdur.c" -o "$out18/sweetdur"
 	codesign -s - -f --entitlements "$here/entitlements.plist" "$out18/sweetdur"
