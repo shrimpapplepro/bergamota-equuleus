@@ -35,6 +35,10 @@ if [ "${IOS18:-1}" = 1 ]; then
 		"$here/sweetprefs.c" -o "$out18/sweetprefs"
 	codesign -s - -f --entitlements "$here/entitlements.plist" "$out18/sweetprefs"
 	python3 -I "$pacstrip" --sign "$out18/sweetprefs"
+	# sweetclock: dual-boot wall clock (kernel patch 0262, root_tweaks18.sweetclock)
+	xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -O2 -Wall "$here/sweetclock.c" -o "$out18/sweetclock"
+	codesign -s - -f --entitlements "$here/entitlements.plist" "$out18/sweetclock"
+	python3 -I "$pacstrip" --sign "$out18/sweetclock"
 	# sweetdur: UFS/HFS durability test (kernel patch 0221)
 	xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -O2 -Wall "$here/sweetdur.c" -o "$out18/sweetdur"
 	codesign -s - -f --entitlements "$here/entitlements.plist" "$out18/sweetdur"

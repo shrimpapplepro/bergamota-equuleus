@@ -539,6 +539,25 @@ def sweetmetrics(root):
     print('sweetmetrics: /usr/local/bin/sweetmetrics')
 
 
+SWEETCLOCK_LABEL = 'org.sweet.sweetclock'
+
+
+def sweetclock(root):
+    """/usr/local/bin/sweetclock and its job (at load, then every 10 minutes, as root): a second copy of the RTC
+    offset in /private/var/db/sweetclock, so the wall clock survives a dual-boot session of another OS that takes the
+    RTC alarm registers (kernel patch 0262, tools/sweetnet/sweetclock.c). Skipped when it is not built."""
+    src = find_sweetnet('ios18/sweetclock')
+    if not src:
+        print('sweetclock: not built (tools/sweetnet/build.sh): skipped')
+        note_skip('sweetclock', not_built())
+        return
+    install_file(src, os.path.join(root, 'usr/local/bin/sweetclock'))
+    add_job(root, SWEETCLOCK_LABEL, {
+        'Label': SWEETCLOCK_LABEL, 'ProgramArguments': ['/usr/local/bin/sweetclock'], 'RunAtLoad': True,
+        'StartInterval': 600, 'UserName': 'root', 'StandardErrorPath': '/private/var/log/sweetclock.log'})
+    print('sweetclock: /usr/local/bin/sweetclock, job', SWEETCLOCK_LABEL)
+
+
 def find_container(root, kind, identifier):
     for meta in glob.glob(os.path.join(root, 'private/var/containers', kind, '*',
                                        '.com.apple.mobile_container_manager.metadata.plist')):
@@ -1383,6 +1402,7 @@ def main():
     netcfg(root)
     sweetreboot(root)
     sweetmetrics(root)
+    sweetclock(root)
     ssh(root)
     auto(root)        # staged apps, bluetooth, PosterBoard, first-boot job (opt-outs: RENEGADE_NO_*)
     activation(root)
