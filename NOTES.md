@@ -2,6 +2,32 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-10: iOS 26 root on `ios_root`, first boot NOT run yet <<<
+Goal: Wi-Fi, which upstream only has on iOS 26 (docs/WIFI_IOS26.md, WPA2 join on boot 54). iOS 18 stays as the fallback.
+* **Partitions:** `boot` = LineageOS (default), `recovery` = iOS 18 image 10 (Power + Vol Up), `ios_data` = iOS 18 root,
+  `ios_root` = **iOS 26.6.2 root** (written by dd from LineageOS and read back: sha256 equal to the Mac image, 31 GiB),
+  `userdata` = LineageOS. Never flash `userdata` or `boot` here.
+* **Kernel:** xnu-12377 with 1200-1203 (= 0260-0263: ST touch, stall recovery, dual-boot clock, AMOLED brightness) and
+  the UFS root default `ios_root` (91db108). CI run 42842891033 (`gh workflow run xnu.yml -r develop -f
+  macos_version=26.5`; a push to develop only builds the 15.3 / xnu-11215 kernel). Local copy: `xnu/out-12377-1203/`.
+* **ADT:** `mkadt.py --board equuleus --highmem --display-scale 2 --points 414x896 --identity n104ap`, then
+  `adt-gpufw.py` (and `adt-wlan.py` for the Wi-Fi boots). All git-ignored.
+* **Root:** `RENEGADE_TARGET=ios26 RENEGADE_NO_BGMTL=1 tools/renegade/mkroot-full.sh --no-jb --size 31g`. 3ee9b11: a
+  full build now installs sweetmetrics, sweetclock and sweetbright, and links `sweetpb26.dylib` into PosterBoard on
+  ios26. Chlorophyll ships off: `research/bgmtl` is the iOS 18 build, iOS 26 needs Chlorophyll's `ios26` branch
+  (MercuryPosterExtension still names bgmtl-inject, which is inert without `/private/var/tmp/bgmtl.arm`).
+* **Boot images (fastboot boot only, nothing flashed):** `enxerto/out/equuleus-boot26-1.img` = the default ios26
+  args + `ufsroot=ios_root sweetcharger=2 sweetcharger_fcc=1500 ufslogsecs=1 sweetgpu=8 sweetgpufreq=gov sweetgpuboost=7`
+  (copy scan-out, as upstream's iOS 26 boots); `equuleus-boot26-2-direct.img` adds `sweetfb_direct=1
+  sweetfb_scancopy=2 sweetfb_zcforce=1` (this phone's iOS 18 display settings).
+* **Next:** first boot with the user watching (touch, clock, brightness, SSH on 192.168.7.2), wallpaper
+  (`sweetlegacywall` if the poster stays black), then `sweet80211=2` (iOS half), then `sweetwlan=5 sweet80211=3
+  sweetwlandelay=60` with the wlan ADT. The driver reads `modem`, `fsg`, `fsc`, `modemst1/2` by name and this phone has
+  all of them with the same firmware file names; LineageOS reports WLAN board id 0, so expect `bdwlan.b00` or the
+  `bdwlan.bin` fallback. Nothing writes those partitions.
+* **Untested:** everything above on the phone. Whether ST touch, the command-mode panel and DCS brightness behave on
+  xnu-12377 as on 11215 is a guess from identical patches.
+
 ### >>> 2026-10-26: Wi-Fi, PAC fallback and Chlorophyll-on-Turnip merged into develop (user) <<<
 * Wi-Fi `claude/wlan26-chip-037a03` was already develop (f4b36c1, boot 54 WPA2 join). Merged `claude/peaceful-saha-28595a` (xnu-12377 1019 PAC emulation, tools/pacemu) and `claude/chlorophyll-turnip-c432e2` (freedreno-sweet syncobjs + prime fds, sweetgpu, notes; NOTES conflict: both sections kept below).
 * Chlorophyll: `ios26` fast-forwarded to `turnip` d3cb665 (Turnip runtime, Mesa 26.2.5, guard-page slack); `gpu/metal` gitlink dbfcd6d -> d3cb665. The Turnip session's boot 54-55 notes (SpringBoard SMMU faults, guard-page fix) are not yet in NOTES on this branch. Nothing pushed (develop and Chlorophyll ios26 are local).
