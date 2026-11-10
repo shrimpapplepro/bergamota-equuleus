@@ -91,11 +91,25 @@ int
 main(int argc, char **argv)
 {
 	long long raw, off = 0, now = (long long)time(NULL);
-	int have = 0;
-	if (raw_rtc(&raw) != 0) {
-		say("no kern.sweet_rtc_raw (errno %lld): kernel without patch 0262", errno, 0, 0);
-		return 1;
+	int have = 0, tries = 0;
+	/* Early in boot the RTC can be unreadable for a while (ENXIO): retry for 2 minutes while the clock is not set. */
+	while (raw_rtc(&raw) != 0) {
+		int e = errno;
+		if (e == ENOENT) {
+			say("no kern.sweet_rtc_raw: kernel without patch 0262", 0, 0, 0);
+			return 1;
+		}
+		now = (long long)time(NULL);
+		if (++tries >= 24 || (now >= T_MIN && now < T_MAX)) {
+			say("RTC not readable (errno %lld) after %lld tries", e, tries, 0);
+			return 1;
+		}
+		sleep(5);
 	}
+	if (tries) {
+		say("RTC readable after %lld tries", tries, 0, 0);
+	}
+	now = (long long)time(NULL);
 	have = load(&off) == 0;
 	if (argc > 1 && strcmp(argv[1], "show") == 0) {
 		printf("raw %lld stored-offset %s%lld now %lld (%s)\n", raw, have ? "" : "none ", have ? off : 0, now,
