@@ -2,6 +2,17 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 13:37: first macOS 27.2 root boot HUNG with no log (needs a hard reset) <<<
+* Root: `tools/renegade/mkroot-mac27-mini.py` = the 27.2 restore ramdisk as a 2 GiB HFSX root (restore jobs removed,
+  syslogd kept, dropbear-mac on 22, `org.sweet.mac27.hello` to /dev/console, 524 Mach-Os pacstripped, owners applied,
+  fsck clean). Image `/Volumes/DEEZNUTS/mac27-study/root-mini/mac27-mini.img` written to the START of `ios_data`
+  (sda24) with the user's OK, sha256 e5997479... equal on both sides.
+* Boot: `enxerto/out/equuleus-mac27-mini-1.img` = boot26-4 (kernel 1205) with `ufsroot=ios_data`, `fastboot boot` at
+  13:31:40. Result: the Mac saw the USB Ethernet link come up again (fresh en11 counters, 2 packets in), then nothing:
+  no UDP kernel log at all, no ping, no SSH, no adb/fastboot, for 6+ min. wdt=-1, so it will not reset by itself.
+* Next: hard reset by hand (Power, or Power + Vol Down for fastboot), then from LineageOS read the console ring at the
+  end of `ios_data` (`ufslogsecs=1`: last 8 MiB, dd bs=4096 skip=14700539 count=2048) to see how far the boot got.
+
 ### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 13:02: macOS 27.2 userland RUNS on this kernel (stage 1 passed) <<<
 macOS 27.2 `echo`/`uname`/`date`/`id`/`ls`/`ps`/`plutil` ran on the phone with macOS 27.2's dyld and PAC-stripped
 shared cache on xnu-12377 + patch 1205 (`sweetvmgap=1`, image `enxerto/out/equuleus-boot26-4-vmgap.img`, RAM boot).
