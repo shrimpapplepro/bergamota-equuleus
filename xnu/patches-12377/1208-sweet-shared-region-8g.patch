@@ -1,0 +1,21 @@
+diff --git a/osfmk/mach/shared_region.h b/osfmk/mach/shared_region.h
+--- a/osfmk/mach/shared_region.h
++++ b/osfmk/mach/shared_region.h
+@@ -88,7 +88,17 @@
+ /* ARM64_TODO: move to higher memory */
+ #endif
+ #define SHARED_REGION_BASE_ARM64                0x180000000ULL
++#if defined(KERNEL) && defined(ARM64_BOARD_CONFIG_SWEET)
++/*
++ * sweet: the macOS 27.2 (26B123) dyld cache is built for a 0x1cbb28000-byte region at 0x180000000 with a 512 MiB
++ * max slide (dyld_cache_header sharedRegionSize/maxSlide), more than the 6 GiB of xnu-12377: the full macOS root's
++ * first boot had mapping[5] at 0x2feef8000 + 0x1414000 refused (kr 1), no cache, "Library not loaded:
++ * /usr/lib/libSystem.B.dylib" for launchd. 8 GiB (to 0x380000000) holds the cache at any slide; 32 MiB twig aligned.
++ */
++#define SHARED_REGION_SIZE_ARM64                0x200000000ULL
++#else
+ #define SHARED_REGION_SIZE_ARM64                0x180000000ULL
++#endif
+ #define SHARED_REGION_NESTING_BASE_ARM64        SHARED_REGION_BASE_ARM64
+ #define SHARED_REGION_NESTING_SIZE_ARM64        SHARED_REGION_SIZE_ARM64
+ #define SHARED_REGION_NESTING_MIN_ARM64         ?
