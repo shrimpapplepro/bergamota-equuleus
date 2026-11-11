@@ -110,8 +110,45 @@ def macho_worker_mac(path):
         shutil.rmtree(t, ignore_errors=True)
 
 
+def seed_data_template(root, table):
+    """A new Mac's Data volume starts as a copy of /System/Library/Templates/Data (/private/etc with passwd/group,
+    /private/var/db with dslocal and the timezone link, /Library, /Users, /Applications...). Here the one volume is
+    both, so the template is merged into the root: entries that already exist stay (the OS volume's files, our SSH
+    keys), the rest are copied with the template's owners/modes from the owner map. Without it tzinit failed
+    ("Unable to locate data") and /private/etc was nearly empty."""
+    tpl_rel = 'System/Library/Templates/Data'
+    tpl = os.path.join(root, tpl_rel)
+    added = 0
+    for r, dirs, files in os.walk(tpl):
+        rel_dir = os.path.relpath(r, tpl)
+        rel_dir = '' if rel_dir == '.' else rel_dir
+        for n in sorted(dirs) + sorted(files):
+            rel = (rel_dir + '/' + n) if rel_dir else n
+            src, dst = os.path.join(r, n), os.path.join(root, rel)
+            # follow the root's own symlinks for parents (/etc, /var -> private/...): write through them
+            if os.path.lexists(dst):
+                key = tpl_rel + '/' + rel
+                if rel not in table and key in table:      # a rerun after a partial merge
+                    table[rel] = table[key]
+                continue
+            if os.path.islink(src):
+                os.symlink(os.readlink(src), dst)
+            elif os.path.isdir(src):
+                os.mkdir(dst)
+            else:
+                shutil.copyfile(src, dst)
+            key = tpl_rel + '/' + rel
+            if key in table:
+                table[rel] = table[key]
+            if not os.path.islink(dst) and rel in table:
+                os.chmod(dst, table[rel][2] | (0o700 if os.path.isdir(dst) else 0o600))   # stay readable until seal
+            added += 1
+    log(f'Data template: {added} entries merged into the root')
+
+
 def stage_tweaks(a, root, table):
     import plistlib
+    seed_data_template(root, table)
     allow = set(DEFAULT_JOBS)
     if a.allow_jobs:
         allow = {l.strip() for l in open(a.allow_jobs) if l.strip() and not l.startswith('#')}
