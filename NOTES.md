@@ -2,6 +2,25 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 01:40: FULL macOS 27.2 root built, being written to ios_data <<<
+* Sources (UniversalMac_27.2_26B123, identity vma2macosap): `ipsw extract --dmg fs|sys|app` then `ipsw fw aea`
+  (keys fetched by ipsw) -> `/Volumes/DEEZNUTS/mac27-study/full/26B123__MacOS/`: OS 141-12228-170.dmg (14.3 GB),
+  SystemOS cryptex 141-12293-172.dmg (2.9 GB, dyld cache in /System/Library/dyld), AppOS 141-12233-175.dmg.
+* Builder `tools/renegade/mkroot-mac27-full.py` (reuses mkroot-full.py, which got `CACHE_REL`): image
+  `/Volumes/DEEZNUTS/mac27-study/full/mac27-full.img` (34 GiB, 28 GiB used; label iOSRoot), block manifest `.blocks`.
+  Fixes found on the way: macOS files carry SF_RESTRICTED and a non-root ditto silently drops them (-> py_copy_tree);
+  hfs_trim can't punch holes on exFAT (skipped); 6 root-only entries (dslocal Default templates, visudo) copied with
+  sudo + owner map rebuilt (see the builder docstring); multiprocessing needs sys.modules['mkroot_full']; 4 bundle
+  executables (Dock, 2 iWork, UnilogConfigXPCService) fail codesign in place (unsigned nested x86 xpc) -> signed as
+  standalone copies (now automatic). Mach-O pass: 5174 rewritten in 39 min; cache pass + FIPS HMAC for 3 corecrypto
+  images. launchd cache /System/Library/xpc/launchd.plist cut from 918 jobs to 18 (allow-list in the builder;
+  original kept as launchd.plist.sweet-orig; plists of the rest moved to LaunchDaemons.sweet-off / LaunchAgents.sweet-off).
+  fsck OK.
+* Writer `tools/equuleus/write-ios-data.py IMG --full` (then without --full: only changed 1 MiB blocks against
+  IMG.phone), sha256 read-back on the phone. ios_data held the mini root (image kept on DEEZNUTS).
+* Next: RAM-boot `enxerto/out/equuleus-mac27-mini-2.img` (same kernel/cmdline, ufsroot=ios_data); not in restore
+  mode now, so launchd runs its macOS boot tasks.
+
 ### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 22:35: macOS 27.2 BOOTS to an SSH shell; panics now auto-reboot with a log <<<
 * `enxerto/out/equuleus-mac27-mini-2.img` (kernel = 1207 build run 43035383573, includes 1206; mini-1 cmdline, see
   scratchpad mac27-mini.cmdline) RAM-booted 22:29:07 with the unchanged mini root on `ios_data`. SSH (dropbear-mac)

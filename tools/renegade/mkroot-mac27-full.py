@@ -23,6 +23,14 @@ first place ignition looks on the system volume). Then (tweaks):
 seal: unmount, hfsroot_owners.py (owner map, the rest root:wheel), fsck_hfs, then a manifest of the image's 1 MiB
 block hashes (OUT_IMG.blocks) for writeback-ios-data.py, which later writes only changed blocks to the phone.
 Nothing here touches the phone.
+
+Known gap (2026-11-12 build): six OS-volume entries are root-only even on a noowners mount (the dslocal Default node
+templates aliases/computers/groups/networks/users under System/Library/Templates/Data/private/var/db/dslocal/nodes/
+Default, and usr/sbin/visudo), so the copy stage stops after `ditto os` with "Permission denied". Copy them with sudo
+(`cp -Rp` from a read-only mount of the OS dmg), record `stat -f "%N\t%u\t%g\t%Lp"` of them, rebuild owners.tsv
+(appos, sysos, os walked owners-on, then those lines), run mf.prune_after(root, 'os') + mf.layout_fixes(root), make
+the copies user-readable for the build, and continue with --stages macho,cache,tweaks,seal (the seal step applies
+the recorded modes). The 2026-11-12 build did exactly that (scratchpad mac27-owners-resume.py).
 """
 import argparse
 import hashlib
@@ -38,6 +46,7 @@ ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
 sys.path.insert(0, HERE)
 spec = importlib.util.spec_from_file_location('mkroot_full', os.path.join(HERE, 'mkroot-full.py'))
 mf = importlib.util.module_from_spec(spec)
+sys.modules['mkroot_full'] = mf          # multiprocessing pickles mf.macho_worker by module name
 spec.loader.exec_module(mf)
 rplat = mf.rplat
 log = mf.log
@@ -75,6 +84,30 @@ HELLO = """<?xml version="1.0" encoding="UTF-8"?>
 <key>StandardOutPath</key><string>/dev/console</string><key>StandardErrorPath</key><string>/dev/console</string>
 </dict></plist>
 """
+
+
+def macho_worker_mac(path):
+    """mkroot-full's worker, plus: codesign refuses a bundle's main executable whose bundle has unsigned nested code
+    ("code object is not signed at all / In subcomponent ...": Dock, iWork importers). The kernel checks no bundle
+    seals, so such a file is signed as a standalone copy outside its bundle and put back (identity kept)."""
+    import tempfile
+    p, status, counts = mf.macho_worker(path)
+    if not (status or '').startswith('FAILED: codesign failed'):
+        return p, status, counts
+    t = tempfile.mkdtemp(prefix='sweet-sign-')
+    try:
+        q = os.path.join(t, os.path.basename(path))
+        shutil.copyfile(path, q)
+        os.chmod(q, 0o755)
+        old = mf.pacstrip.sign(q)
+        mode = os.stat(path).st_mode & 0o7777
+        shutil.copyfile(q, path)
+        os.chmod(path, mode)
+        return p, 'rewritten', {'__ident': old, 'standalone-signed': 1}
+    except BaseException as e:
+        return p, 'FAILED: standalone sign: ' + str(e)[:200], None
+    finally:
+        shutil.rmtree(t, ignore_errors=True)
 
 
 def stage_tweaks(a, root, table):
@@ -212,10 +245,15 @@ def main():
     mf.W = work
     mf.JB_OWNERS = os.path.join(work, 'owners-jb.tsv')
     mf.CACHE_REL = CACHE_REL
+    mf.macho_worker = macho_worker_mac         # stage_macho's pool looks the worker up as a module global
     # macOS system files carry the `restricted` BSD flag (SF_RESTRICTED); a non-root ditto cannot set it and then
     # leaves the file out ("Operation not permitted", first run: Safari.app and 28 more from AppOS alone). The
     # platform's pure Python copy moves data, symlinks and hard links only; owners/modes come from the owner map.
     mf.copy_tree = lambda src, dst: rplat.py_copy_tree(src, dst, list(mf.EXCLUDE), chown=False)
+    # hfs_trim.py punches holes into the image file to give pruned blocks back to the host; exFAT (DEEZNUTS) has no
+    # F_PUNCHHOLE ("Inappropriate ioctl for device"), and the image is not sparse there anyway: skip it.
+    _run = mf.run
+    mf.run = lambda cmd, **kw: None if any(str(c).endswith('hfs_trim.py') for c in cmd) else _run(cmd, **kw)
     rootmnt = os.path.join(work, 'root')
     dmgs = {k: os.path.join(a.dmg_dir, v) for k, v in DMG_NAMES.items()}
     img = os.path.abspath(a.out)
