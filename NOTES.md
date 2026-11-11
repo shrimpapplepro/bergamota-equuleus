@@ -2,14 +2,23 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 21:25: panics reboot by themselves and leave a log (patch 1207, building) <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 22:10: panic auto-reboot + log (patch 1207), third build running <<<
+* 1st 1207 build (run 43027788486) failed to apply: my rebuild of sweet_spmi.c had skipped 1202/1204 (patches that
+  start with `--- a/` and no `diff --git` line). Fixed; 2nd build 43029468155 OK.
+* 2nd build, booted as `equuleus-mac27-mini-2.img` at 21:55: early panic, never reached USB (user's photo): "Invalid
+  kernel stack pointer ... pc 0xfffffe0007d75584", ESR 0x96000061 (alignment fault, write), FAR = panic region base
+  + 0x40. The region was DRAM 0xb0040000 mapped by ml_io_map_wcomb (the only kinds io_map offers that early), and
+  check_for_panic_log()'s bzero (DC ZVA) faults on that mapping. Fix: the region is now a static 256 KiB cacheable
+  kernel buffer (it need not survive the reset; the pstore copy at 0xb0000000 does, written with byte/word stores).
+  3rd build: run 43035383573. Phone needs a hard reset by hand after this try.
+
+#### patch 1207 design (written 21:25)
 User: "Make it auto reboot when see a panic. And log it."
 * Why panics hung: no iBoot, so the ADT has no `pram`, gPanicBase = 0 ("debug_log_init: Error!! gPanicBase is still
   not initialized"), panic_info NULL, and arm64 `SavePanicInfo()` spins forever right after the first panic line. No
   paniclog, no kPEPanicDiagnosticsDone, no restart (and debug=0xc has DB_NMI = panicDebugging, which never restarts).
-* Patch 1207 (CI run 43027788486): pe_init.c gives the board a panic region when the ADT has none: 0xb0040000 +
-  512 KiB (inside LineageOS's ramoops@b0000000 4 MiB carve-out, outside XNU RAM 0x100000000+; skipped if it overlaps
-  kernel RAM, as on sweet; `sweetpram=0` off). At kPEPanicDiagnosticsDone SweetPlatformExpert calls
+* Patch 1207: pe_init.c gives the board a panic region when the ADT has none (now a static kernel buffer, see
+  above; `sweetpram=0` off). At kPEPanicDiagnosticsDone SweetPlatformExpert calls
   `sweet_reboot_panic_done()`: paniclog + other log + console tail (msgbuf) -> ramoops dmesg record 0 (0xb0000000,
   persistent_ram_buffer sig 0x43474244, "====0.0-D" header), screen line "SWEET PANIC: log saved ...; reset to X in
   N s", wait `sweetpanicwait` (default 10 s), PM8998 PON PS_HOLD reset type -> warm (0x85a=0x01, 0x85b bit 7; SPMI
