@@ -2,7 +2,25 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 later: iOS REMOVED from the phone, next experiment is macOS 27.2+ <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 09:4x: iOS 26 back on the phone; macOS input = trackpad on the display <<<
+* **Phone now (observed, nothing rebooted):** user: "Put ios 26 in recovery instead. Remove ios 18? 26 is better
+  anyway." `ios_root` (sda23) = iOS 26.6.2 root again (sha256 ae1d65f5..., read back from the phone and compared);
+  `recovery` (sda19) = `enxerto/out/equuleus-boot26-3-wifi.img` (sha256 51d02965c8512718..., read back after
+  drop_caches). Lineage Recovery was saved before the write (same sha256 0171ce01... as the 2026-11-08 backup) to the
+  external drive. iOS 18 stays removed. `ios_data` (sda24, 56 GiB) is empty and kept for macOS. `boot` and `userdata`
+  (LineageOS) untouched. **The first Power + Volume Up boot of iOS 26 has NOT been done:** do it only with the user
+  watching, then set the clock once from the Mac (`date @N`, `sweetclock`), time zone, and join Wi-Fi.
+* **macOS input decision (user):** "maybe emulate a trackpad on display probably a better idea, mac buttons and icons
+  are hella small on the phone display". So the touch panel acts as a trackpad (pointer + taps/clicks + gestures);
+  direct touch is secondary.
+* **Henge test on the Mac (stock macOS 27.2 guest, see `docs/MACOS27_FEASIBILITY.md`):** a USB digitizer with Apple's
+  descriptor binds `AppleMultitouchHIDService` and its reports are read, but taps on a list row and a button did
+  nothing. The emulated Magic Trackpad 2 moves the pointer and its press clicked Setup Assistant's arrow (observed).
+  27.2 kernel personalities for a trackpad on the phone: "Trackpad HID Bridge - MT" (any IOHIDInterface with VendorID
+  0x05ac and usage page 1 usage 2), "Mac MTP MT" (Transport FIFO, built-in), AppleVirtIOInputTrackpad, MTUserDevice.
+* Heavy files (old images, IPSWs) were moved to the external drive with symlinks left behind; the drive is exFAT.
+
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 later: iOS REMOVED from the phone, next experiment is macOS 27.2+ (phone state SUPERSEDED above) <<<
 Read `docs/MACOS27_FEASIBILITY.md` first. User: "Remove all the stuff on xiaomi but lineageos", then macOS ("ideally
 macOS Golden Gate" = 27), reference repo iOSNJBrepo/macOS-uke (macOS 26.5 on the Xiaomi Pad 7).
 * **Phone now (observed):** `recovery` = LineageOS Recovery (restored from the backup, read-back sha256 0171ce01...);

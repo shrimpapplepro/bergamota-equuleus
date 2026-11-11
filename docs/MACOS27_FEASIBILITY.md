@@ -127,16 +127,32 @@ DarwinBoot, NativeUfs).
   (2026-11-11, after the cleanup).
 * macOS 26.5 IPSW: `https://updates.cdn-apple.com/2026SpringFCS/fullrestores/122-58869/DFB1CEEF-5619-4591-9924-E20DB2C8FED0/UniversalMac_26.5_25F71_Restore.ipsw`
 
+## Input test in Henge (2026-11-11, Mac only) [V]
+
+Henge worktree `~/dev/Henge-touch`, branch `touchscreen` (local only), stock macOS 27.2 guest at Setup Assistant.
+* A USB HID digitizer with Apple's 191-byte descriptor (page 0x0D usage 4, 4 fingers, 16-bit X/Y, manufacturer
+  "Apple") is matched by `AppleMultitouchHIDService`: the guest asks for Apple's sensor feature reports (0xdb, 0xd1,
+  0xd3, 0xd0, 0xa1, 0xd9, 0x7f, 0x73) and reads the finger reports. **But taps on a list row and on the arrow button did
+  nothing.** The hello screen did move on after one tap, but its log said "auto-advance state is pending", so that
+  proves nothing. Not pursued further: the user chose trackpad input.
+* The emulated **Magic Trackpad 2** (upstream Henge, USB 05ac:0265) moved the pointer, (962, 964) to (1786, 534), and
+  its press clicked the arrow (spinner appeared).
+* For the phone: the 27.2 kernel cache has these trackpad personalities: "Trackpad HID Bridge - MT"
+  (`AppleMultitouchTrackpadHIDEventDriver`, any `IOHIDInterface` with VendorID 0x05ac and usage page 1 usage 2),
+  "Mac MTP MT - MacNN,N" (same class, Transport "FIFO", built-in trackpads), `AppleVirtIOInputTrackpad`, and
+  `MTUserDevice` (page 0xFF60 usage 7). The plan is for this fork's ST FTS touch driver to publish a HID device that
+  behaves like the Magic Trackpad 2 Henge emulates (its report format and feature-report answers are in Henge's
+  `devices/xhci.c`), mapping absolute panel touches to trackpad finger positions. Untested.
+
 ## Open questions (not started)
 
 * Stage 1, cheap and non-destructive: one macOS 27 command-line binary with macOS 27's own dyld and libSystem from the
   restore ramdisk (`141-12288-175.dmg`), rewritten with `pacstrip`, run over SSH on the running iOS 26 system
   (`tools/renegade/mkbundle.py`, as in `docs/IOS18_PORT.md`). It tests the kernel gap directly. The iOS 26 root was
-  removed from the phone on 2026-11-11, so this now needs `ios26-root-full.img` written back to `ios_root` first, or a
-  small macOS root of its own.
+  written back to `ios_root` on 2026-11-11 (hash verified), so this can run once iOS 26 is booted from `recovery`.
 * Root: system volume `141-12228-170.dmg.aea` (11.3 GB) + cryptexes (2.4 GB + App) on one HFS volume; size against the
   31 GiB `ios_root` and what replaces which root is the user's decision.
 * WindowServer without a Metal device: unknown. Chlorophyll has no macOS build (and no iOS 26 build yet).
-* Input: macOS 27 has a touchscreen path (section "Target" above). First test: a 0x0D/0x04 HID touchscreen in Henge
-  on the Mac. Fallback: touch as a pointer, as macOS-uke does.
+* Input: DECIDED by the user 2026-11-11: the touch panel acts as a **trackpad** (macOS controls are too small for
+  fingers on a 6.4" panel). See "Input test in Henge" below.
 * Census tool and outputs are kept in `/Volumes/DEEZNUTS/mac27-study/census/`.
