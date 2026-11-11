@@ -1,0 +1,31 @@
+diff --git a/osfmk/vm/vm_map.c b/osfmk/vm/vm_map.c
+--- a/osfmk/vm/vm_map.c
++++ b/osfmk/vm/vm_map.c
+@@ -7732,6 +7732,27 @@
+ {
+ 	mach_exception_code_t code;
+ 	mach_exception_data_type_t subcode;
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * sweet (boot-arg sweetvmgap=1): no EXC_GUARD for a deallocation or MAP_FIXED overwrite that
++	 * finds a hole. macOS 27 dyld maps a private shared cache with MAP_FIXED over the range the
++	 * removed shared region left empty; this kernel reports that as kGUARD_EXC_DEALLOC_GAP, which
++	 * is fatal for platform binaries (all of them here). The operation itself succeeds either way;
++	 * third-party processes get the same result from the default (non-fatal) policy.
++	 */
++	static int sweet_vmgap = -1;
++	if (sweet_vmgap < 0) {
++		int on = 0;
++		PE_parse_boot_argn("sweetvmgap", &on, sizeof(on));
++		sweet_vmgap = on;
++	}
++	if (sweet_vmgap && reason == kGUARD_EXC_DEALLOC_GAP) {
++		printf("SWEET VMGAP: %d[%s] gap at 0x%llx not reported\n", proc_selfpid(),
++		    (get_bsdtask_info(current_task()) ? proc_name_address(get_bsdtask_info(current_task())) : "?"),
++		    (uint64_t)address);
++		return;
++	}
++#endif
+ 	if (vm_map_guard_exception_internal(map, address, reason, &code, &subcode)) {
+ 		task_t task = current_task();
+ 		bool sticky = task->task_exc_guard & TASK_EXC_GUARD_VM_FATAL;
