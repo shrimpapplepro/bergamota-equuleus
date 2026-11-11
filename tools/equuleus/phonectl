@@ -22,6 +22,9 @@
 #                                       same image (nothing written)
 #   phonectl boot-los                   from iOS or fastboot: back to LineageOS (and adb root)
 #   phonectl fastboot                   from iOS or LineageOS: to the bootloader
+#   phonectl panics [keep]              LineageOS: save XNU panic logs (pstore dmesg-ramoops-*, written by kernel
+#                                       patch 1207 before its warm reset) to $PANICS, print their head, then erase
+#                                       them so the next panic gets a clean record (keep: do not erase)
 #
 # Never writes a partition. The serial is spelled out on every adb/fastboot call on purpose (a second adb
 # device is often connected).
@@ -32,6 +35,7 @@ SSHO=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ER
 HERE=${0:A:h}
 IOS_IMG=${PHONECTL_IOS_IMG:-$HERE/../../enxerto/out/equuleus-boot26-3-wifi.img}
 SHOTS=${PHONECTL_SHOTS:-/Volumes/DEEZNUTS/mi8pro-remote/shots}
+PANICS=${PHONECTL_PANICS:-/Volumes/DEEZNUTS/mi8pro-remote/panics}
 
 ios() { ssh "${SSHO[@]}" $IOS "$@"; }
 
@@ -124,5 +128,20 @@ fastboot)
 	*) adb -s 5d37c8ba reboot bootloader ;;
 	esac
 	waitfor fastboot ${1:-120} ;;
-*) sed -n '2,25p' $0 | sed 's/^# \{0,1\}//'; exit 2 ;;
+panics)
+	need los >/dev/null
+	[ -d /Volumes/DEEZNUTS ] || { echo "phonectl: DEEZNUTS not mounted" >&2; exit 1; }
+	mkdir -p $PANICS
+	adb -s 5d37c8ba root >/dev/null 2>&1; sleep 2; adb -s 5d37c8ba wait-for-device
+	recs=($(adb -s 5d37c8ba shell 'ls /sys/fs/pstore/ 2>/dev/null' | tr -d '\r' | grep '^dmesg-ramoops-'))
+	(( ${#recs} )) || { echo "no panic records in pstore"; exit 0; }
+	for r in $recs; do
+		out=$PANICS/$(date +%Y%m%d-%H%M%S)-$r.txt
+		adb -s 5d37c8ba exec-out "cat /sys/fs/pstore/$r" > $out
+		[ -s $out ] || { echo "phonectl: $r came back empty" >&2; continue; }
+		echo "== $out ($(wc -c < $out | tr -d ' ') bytes)"
+		grep -m1 -a 'SWEET PANIC' $out; grep -m3 -a -E '^panic\(|Debugger message|initproc exited' $out
+		[ "${1:-}" = keep ] || adb -s 5d37c8ba shell "rm /sys/fs/pstore/$r"
+	done ;;
+*) sed -n '2,28p' $0 | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

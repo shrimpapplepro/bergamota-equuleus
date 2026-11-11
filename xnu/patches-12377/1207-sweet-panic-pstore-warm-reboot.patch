@@ -1,0 +1,495 @@
+diff --git a/bsd/dev/sweet_reboot.c b/bsd/dev/sweet_reboot.c
+--- a/bsd/dev/sweet_reboot.c
++++ b/bsd/dev/sweet_reboot.c
+@@ -29,9 +29,17 @@
+  * overridden for the next reboot by the root-only sysctl
+  * kern.sweet_reboot_mode (string; "fastboot" is accepted for "bootloader").
+  *
+- * Panic: unchanged (no reset, the screen/log stays) unless the boot-arg is
+- * sweetreboot=bootloader; then a panic also resets into fastboot (unattended
+- * tests). The sysctl does not affect panics.
++ * Panic (patch 1207): when the paniclog is complete (kPEPanicDiagnosticsDone;
++ * pexpert/arm/pe_init.c now gives the board a panic region, so it gets there)
++ * the paniclog and the tail of the kernel console go into Linux's ramoops as
++ * dmesg record 0 (0xb0000000, the LineageOS layout: record-size 256 KiB, no
++ * ECC), the panic stays on screen for sweetpanicwait seconds (default 10), then
++ * the PMIC is set to a warm reset (DRAM kept) and the phone resets into the mode
++ * of boot-arg sweetpanic=normal|bootloader|recovery|bergamota|off (default
++ * normal, i.e. LineageOS; bootloader when sweetreboot=bootloader, as before;
++ * off = the old behaviour: no reset). LineageOS then shows the log as
++ * /sys/fs/pstore/dmesg-ramoops-0 (tools/equuleus/phonectl panics fetches it).
++ * Boot-arg sweetpstore=0: no pstore copy. The sysctl does not affect panics.
+  *
+  * Reset time may be non-preemptible (halt_all_cpus, panic): everything is
+  * mapped by sweet_reboot_init() and the SPMI helpers run lock-less there.
+@@ -44,13 +52,32 @@
+ #include <sys/errno.h>
+ #include <machine/machine_routines.h>
+ #include <pexpert/pexpert.h>
++#include <sys/msgbuf.h>
++#include <kern/debug.h>
++#include <kern/clock.h>
+ #include "sweet_spmi.h"
+ #include "sweet_board.h"
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern vm_offset_t ml_io_map_wcomb(vm_offset_t, vm_size_t);
+ extern void delay(int usec);
+ extern int sweet_ufs_flush_final(void);      /* bsd/dev/sweet_ufs.c: SYNCHRONIZE CACHE (patch 0221) */
++extern void sweet_early_putc(char c);        /* osfmk/arm64/sweet_early.c: draws on the panel during a panic */
++extern unsigned long gPhysBase, gPhysSize;   /* kernel-managed RAM (as in mach/arm/vm_param.h) */
+ 
++/* 1207: Linux ramoops (LineageOS DT ramoops@b0000000: record-size 0x40000, ecc 0), dmesg record 0 */
++#define SR_PSTORE_PA     0xb0000000ull
++#define SR_PSTORE_SIZE   0x40000u
++#define SR_PSTORE_HDR    12u                /* struct persistent_ram_buffer: sig, start, size */
++#define SR_PSTORE_SIG    0x43474244u        /* PERSISTENT_RAM_SIG ("DBGC") ^ 0, fs/pstore/ram_core.c */
++
++/* 1207: PM8998 PON PS_HOLD reset type (qpnp-power-on.c qpnp_pon_reset_config, GEN2: enable bit in CTL2) */
++#define SR_PON_PSHOLD_CTL   0x085au
++#define SR_PON_PSHOLD_CTL2  0x085bu
++#define SR_PON_RESET_EN     0x80u
++#define SR_PON_TYPE_MASK    0x0fu
++#define SR_PON_WARM_RESET   0x01u          /* PON_POWER_OFF_WARM_RESET */
++
+ #define SR_PSHOLD_PA     0x0c264000u
+ #define SR_IMEM_PA       0x146bf000u
+ #define SR_IMEM_RESTART  0x65cu            /* restart_reason@65c */
+@@ -73,7 +100,14 @@
+ static volatile uint32_t *sr_pshold;
+ static volatile uint32_t *sr_imem;
+ static bool sr_ready, sr_pon_ready, sr_in_panic;
++static int sr_panic_mode = SR_NORMAL;      /* -1: stay (sweetpanic=off) */
++static int sr_panic_wait = 10;             /* seconds the panic stays on screen */
++static volatile uint8_t *sr_pstore;        /* NULL: no pstore copy */
++static bool sr_pon_warm_ready, sr_panic_handled;
+ 
++/* printf can take console locks: none of it once a panic began (the screen and pstore carry the panic). */
++#define SR_LOG(...) do { if (!sr_in_panic) { printf(__VA_ARGS__); } } while (0)
++
+ static const char *
+ sr_name(int mode)
+ {
+@@ -160,10 +194,39 @@
+ 	if (sweet_spmi_init() == 0 && sweet_spmi_prepare_write(SR_PON_SID, SR_PON_SPARE) == 0) {
+ 		sr_pon_ready = true;
+ 	}
++	if (sr_pon_ready && sweet_spmi_prepare_write(SR_PON_SID, SR_PON_PSHOLD_CTL) == 0 &&
++	    sweet_spmi_prepare_write(SR_PON_SID, SR_PON_PSHOLD_CTL2) == 0) {
++		sr_pon_warm_ready = true;
++	}
+ 	sr_ready = sr_pshold != NULL;
+-	printf("SWEET REBOOT: boot-arg mode %s, PS_HOLD %s, IMEM %s, PON spare write %s\n",
++
++	/* 1207: what a panic does (see the top of this file) */
++	sr_panic_mode = sr_bootarg == SR_BOOTLOADER ? SR_BOOTLOADER : SR_NORMAL;
++	arg[0] = 0;
++	if (PE_parse_boot_argn("sweetpanic", arg, sizeof(arg))) {
++		int mode = !strcmp(arg, "off") || !strcmp(arg, "0") ? -1 : sr_parse(arg);
++		if (mode < 0 && strcmp(arg, "off") && strcmp(arg, "0")) {
++			printf("SWEET REBOOT: unknown boot-arg sweetpanic=%s (normal)\n", arg);
++			mode = SR_NORMAL;
++		}
++		sr_panic_mode = mode;
++	}
++	int wait = sr_panic_wait;
++	if (PE_parse_boot_argn("sweetpanicwait", &wait, sizeof(wait)) && wait >= 0 && wait <= 600) {
++		sr_panic_wait = wait;
++	}
++	int pstore = 1;
++	(void)PE_parse_boot_argn("sweetpstore", &pstore, sizeof(pstore));
++	if (pstore && (SR_PSTORE_PA + SR_PSTORE_SIZE <= gPhysBase || SR_PSTORE_PA >= gPhysBase + gPhysSize)) {
++		sr_pstore = (volatile uint8_t *)ml_io_map_wcomb((vm_offset_t)SR_PSTORE_PA, SR_PSTORE_SIZE);
++	}
++	printf("SWEET REBOOT: boot-arg mode %s, PS_HOLD %s, IMEM %s, PON spare write %s, PS_HOLD type write %s\n",
+ 	    sr_name(sr_bootarg), sr_pshold ? "mapped" : "NOT mapped",
+-	    sr_imem ? "mapped" : "NOT mapped", sr_pon_ready ? "ready" : "unavailable");
++	    sr_imem ? "mapped" : "NOT mapped", sr_pon_ready ? "ready" : "unavailable",
++	    sr_pon_warm_ready ? "ready" : "unavailable");
++	printf("SWEET REBOOT: panic -> %s after %d s, pstore record %s\n",
++	    sr_panic_mode < 0 ? "stay (sweetpanic=off)" : sr_name(sr_panic_mode), sr_panic_wait,
++	    sr_pstore ? "0xb0000000 mapped" : "off");
+ }
+ 
+ /*
+@@ -176,24 +239,24 @@
+ 	uint8_t old = 0, upd, back = 0;
+ 
+ 	if (!sr_pon_ready) {
+-		printf("SWEET REBOOT: PON spare not writable, reason not stored\n");
++		SR_LOG("SWEET REBOOT: PON spare not writable, reason not stored\n");
+ 		return;
+ 	}
+ 	if (sweet_spmi_read(SR_PON_SID, SR_PON_SPARE, &old) != 0) {
+-		printf("SWEET REBOOT: PON spare read failed, reason not stored\n");
++		SR_LOG("SWEET REBOOT: PON spare read failed, reason not stored\n");
+ 		return;
+ 	}
+ 	upd = (uint8_t)((old & ~SR_REASON_MASK) | ((magic << SR_REASON_SHIFT) & SR_REASON_MASK));
+ 	if (upd == old) {
+-		printf("SWEET REBOOT: PON_SOFT_RB_SPARE 0x88f = 0x%02x already\n", old);
++		SR_LOG("SWEET REBOOT: PON_SOFT_RB_SPARE 0x88f = 0x%02x already\n", old);
+ 		return;
+ 	}
+ 	if (sweet_spmi_write(SR_PON_SID, SR_PON_SPARE, &upd, 1) != 0) {
+-		printf("SWEET REBOOT: PON_SOFT_RB_SPARE 0x88f write 0x%02x -> 0x%02x FAILED\n", old, upd);
++		SR_LOG("SWEET REBOOT: PON_SOFT_RB_SPARE 0x88f write 0x%02x -> 0x%02x FAILED\n", old, upd);
+ 		return;
+ 	}
+ 	(void)sweet_spmi_read(SR_PON_SID, SR_PON_SPARE, &back);
+-	printf("SWEET REBOOT: PON_SOFT_RB_SPARE 0x88f 0x%02x -> 0x%02x (read back 0x%02x)\n", old, upd, back);
++	SR_LOG("SWEET REBOOT: PON_SOFT_RB_SPARE 0x88f 0x%02x -> 0x%02x (read back 0x%02x)\n", old, upd, back);
+ }
+ 
+ /* Called by SweetPlatformExpert::haltRestart for panic notifications. */
+@@ -204,36 +267,30 @@
+ }
+ 
+ /*
+- * Reset the SoC. Returns only if nothing reset it (or no reset was wanted:
+- * -1, the old behaviour). panic_restart: the call comes from a panic restart.
++ * The reset itself: reason, then PS_HOLD, then PSCI. warm: set the PMIC's PS_HOLD reset type to
++ * warm reset first (a panic: DRAM, and with it the pstore record, survives). Returns only if
++ * nothing reset the SoC.
+  */
+-int
+-sweet_reboot_restart(int panic_restart)
++static void
++sr_reset(int mode, bool warm)
+ {
+-	int mode;
+-
+-	/*
+-	 * Before anything else, make sure the UFS write cache holds nothing the file system already
+-	 * completed: the reset below can power-cycle the device. Does not wait for dirty file pages
+-	 * (reboot_kernel() synced and unmounted before getting here; the periodic syncer bounds the
+-	 * rest), only for what the device has acknowledged.
+-	 */
+-	int flush = sweet_ufs_flush_final();
+-	printf("SWEET REBOOT: UFS cache flush -> %d%s\n", flush, flush == EBUSY ? " (busy, skipped)" : "");
+-	if (!sr_ready) {
+-		return -1;
+-	}
+-	if (panic_restart || sr_in_panic) {
+-		/* Panics keep their old behaviour (stay up) unless asked for fastboot. */
+-		if (sr_bootarg != SR_BOOTLOADER) {
+-			return -1;
++	sweet_spmi_atomic();
++	SR_LOG("SWEET REBOOT: resetting, mode %s%s\n", sr_name(mode), sr_in_panic ? " (panic)" : "");
++	if (warm && sr_pon_warm_ready) {
++		/* qpnp_pon_reset_config(): reset enable off, >= 10 sleep clock cycles, type, enable on */
++		uint8_t ctl = 0, ctl2 = 0, v;
++		if (sweet_spmi_read(SR_PON_SID, SR_PON_PSHOLD_CTL, &ctl) == 0 &&
++		    sweet_spmi_read(SR_PON_SID, SR_PON_PSHOLD_CTL2, &ctl2) == 0 &&
++		    ((ctl & SR_PON_TYPE_MASK) != SR_PON_WARM_RESET || !(ctl2 & SR_PON_RESET_EN))) {
++			v = (uint8_t)(ctl2 & ~SR_PON_RESET_EN);
++			(void)sweet_spmi_write(SR_PON_SID, SR_PON_PSHOLD_CTL2, &v, 1);
++			delay(500);
++			v = (uint8_t)((ctl & ~SR_PON_TYPE_MASK) | SR_PON_WARM_RESET);
++			(void)sweet_spmi_write(SR_PON_SID, SR_PON_PSHOLD_CTL, &v, 1);
++			v = (uint8_t)(ctl2 | SR_PON_RESET_EN);
++			(void)sweet_spmi_write(SR_PON_SID, SR_PON_PSHOLD_CTL2, &v, 1);
+ 		}
+-		mode = SR_BOOTLOADER;
+-	} else {
+-		mode = sr_override >= 0 ? sr_override : sr_bootarg;
+ 	}
+-	sweet_spmi_atomic();
+-	printf("SWEET REBOOT: resetting, mode %s%s\n", sr_name(mode), panic_restart || sr_in_panic ? " (panic)" : "");
+ 	/* bergamota: PON reason 0 (normal) so ABL boots the boot partition, where our shim lives. */
+ 	sr_pon_set_reason(mode == SR_BOOTLOADER ? SR_MAGIC_BOOTLOADER :
+ 	    mode == SR_RECOVERY ? SR_MAGIC_RECOVERY : SR_MAGIC_NORMAL);
+@@ -242,15 +299,172 @@
+ 		    mode == SR_RECOVERY ? SR_IMEM_RECOVERY : SR_IMEM_BERGAMOTA;
+ 		sr_imem[SR_IMEM_RESTART / 4] = magic;
+ 		__asm__ volatile ("dsb sy" ::: "memory");
+-		printf("SWEET REBOOT: IMEM restart_reason 0x146bf65c = 0x%08x\n", magic);
++		SR_LOG("SWEET REBOOT: IMEM restart_reason 0x146bf65c = 0x%08x\n", magic);
+ 	}
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	*sr_pshold = 0;
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	delay(2000 * 1000);
+-	printf("SWEET REBOOT: PS_HOLD did not reset, PSCI SYSTEM_RESET\n");
++	SR_LOG("SWEET REBOOT: PS_HOLD did not reset, PSCI SYSTEM_RESET\n");
+ 	sr_psci_system_reset();
+ 	delay(2000 * 1000);
++}
++
++/* pstore record writer: data after the 12-byte persistent_ram_buffer header, byte at a time (write-combined). */
++static uint32_t sr_ps_len;
++
++static void
++sr_ps_put(const char *s, uint32_t n)
++{
++	while (n-- && sr_ps_len < SR_PSTORE_SIZE - SR_PSTORE_HDR) {
++		char c = *s++;
++		if (c) {
++			sr_pstore[SR_PSTORE_HDR + sr_ps_len++] = (uint8_t)c;
++		}
++	}
++}
++
++static void
++sr_ps_str(const char *s)
++{
++	sr_ps_put(s, (uint32_t)strlen(s));
++}
++
++static uint32_t
++sr_ps_room(void)
++{
++	return SR_PSTORE_SIZE - SR_PSTORE_HDR - sr_ps_len;
++}
++
++/* A region of the panic region (offset/length from the embedded panic header), bounded. */
++static void
++sr_ps_panic_part(const char *title, uint32_t off, uint32_t len, uint32_t max)
++{
++	if (!off || !len || off >= gPanicSize) {
++		return;
++	}
++	if (len > gPanicSize - off) {
++		len = gPanicSize - off;
++	}
++	if (len > max) {
++		len = max;
++	}
++	sr_ps_str(title);
++	sr_ps_put((const char *)gPanicBase + off, len);
++}
++
++/*
++ * Linux ramoops dmesg record 0: "====sec.nsec-D\n" (ramoops_read_kmsg_hdr: D = not compressed),
++ * then text. Header written last: sig, start = size = length (persistent_ram_save_old then copies
++ * data[0..length)).
++ */
++static void
++sr_pstore_write(void)
++{
++	char line[160];
++	uint64_t now = mach_absolute_time(), ns = 0;
++
++	if (!sr_pstore) {
++		return;
++	}
++	absolutetime_to_nanoseconds(now, &ns);
++	sr_ps_len = 0;
++	sr_ps_str("====0.0-D\n");
++	snprintf(line, sizeof(line), "SWEET PANIC: xnu panic at %llu.%03llu s uptime, saved by sweet_reboot.c (patch 1207)\n",
++	    ns / 1000000000ull, (ns / 1000000ull) % 1000ull);
++	sr_ps_str(line);
++	sr_ps_str("boot-args: ");
++	sr_ps_str(PE_boot_args());
++	sr_ps_str("\n");
++	struct embedded_panic_header *ph = panic_info;
++	if (gPanicBase && ph && ph->eph_magic == EMBEDDED_PANIC_MAGIC) {
++		sr_ps_panic_part("\n--- paniclog ---\n", ph->eph_panic_log_offset, ph->eph_panic_log_len, 160u * 1024u);
++		sr_ps_panic_part("\n--- other log ---\n", ph->eph_other_log_offset, ph->eph_other_log_len, 16u * 1024u);
++	} else {
++		sr_ps_str("\n(no paniclog: no panic region)\n");
++	}
++	struct msgbuf *mb = msgbufp;
++	if (mb && mb->msg_magic == MSG_MAGIC && mb->msg_size > 0 && mb->msg_bufc && sr_ps_room() > 64) {
++		sr_ps_str("\n--- console tail (msgbuf) ---\n");
++		uint32_t size = (uint32_t)mb->msg_size, x = (uint32_t)mb->msg_bufx % size;
++		uint32_t want = sr_ps_room() - 1;
++		if (want > size) {
++			want = size;
++		}
++		uint32_t at = (x + size - want) % size;
++		for (uint32_t i = 0; i < want && sr_ps_room() > 1; i++) {
++			sr_ps_put(&mb->msg_bufc[(at + i) % size], 1);
++		}
++	}
++	sr_ps_str("\n");
++	__asm__ volatile ("dsb sy" ::: "memory");
++	volatile uint32_t *hdr = (volatile uint32_t *)(void *)sr_pstore;
++	hdr[1] = sr_ps_len;
++	hdr[2] = sr_ps_len;
++	hdr[0] = SR_PSTORE_SIG;
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++static void
++sr_screen(const char *s)
++{
++	while (*s) {
++		sweet_early_putc(*s++);
++	}
++}
++
++/*
++ * 1207: the paniclog is complete (kPEPanicDiagnosticsDone, also kPEPanicRestartCPU as a fallback).
++ * Once per panic. Returns only for sweetpanic=off or when nothing reset the SoC.
++ */
++void
++sweet_reboot_panic_done(void)
++{
++	char line[96];
++
++	sr_in_panic = true;
++	if (sr_panic_handled || !sr_ready) {
++		return;
++	}
++	sr_panic_handled = true;
++	sr_pstore_write();
++	if (sr_panic_mode < 0) {
++		sr_screen(sr_pstore ? "\nSWEET PANIC: log in pstore; sweetpanic=off, staying here\n" : "\n");
++		return;
++	}
++	snprintf(line, sizeof(line), "\nSWEET PANIC: log %s; reset to %s in %d s\n",
++	    sr_pstore ? "saved to pstore (LineageOS /sys/fs/pstore)" : "not saved", sr_name(sr_panic_mode), sr_panic_wait);
++	sr_screen(line);
++	for (int i = 0; i < sr_panic_wait; i++) {
++		delay(1000 * 1000);
++	}
++	sr_reset(sr_panic_mode, true);
++}
++
++/*
++ * Reset the SoC. Returns only if nothing reset it (or no reset was wanted:
++ * -1, the old behaviour). panic_restart: the call comes from a panic restart.
++ */
++int
++sweet_reboot_restart(int panic_restart)
++{
++	if (panic_restart || sr_in_panic) {
++		/* 1207: panics go through sweet_reboot_panic_done (no UFS flush in panic context). */
++		sweet_reboot_panic_done();
++		return -1;
++	}
++	/*
++	 * Before anything else, make sure the UFS write cache holds nothing the file system already
++	 * completed: the reset below can power-cycle the device. Does not wait for dirty file pages
++	 * (reboot_kernel() synced and unmounted before getting here; the periodic syncer bounds the
++	 * rest), only for what the device has acknowledged.
++	 */
++	int flush = sweet_ufs_flush_final();
++	printf("SWEET REBOOT: UFS cache flush -> %d%s\n", flush, flush == EBUSY ? " (busy, skipped)" : "");
++	if (!sr_ready) {
++		return -1;
++	}
++	sr_reset(sr_override >= 0 ? sr_override : sr_bootarg, false);
+ 	return -1;
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -249,7 +249,9 @@
+ 	}
+ 	if (sid == 0) {
+ 		/* PON spare (reboot reason); RTC alarm data 0x6140-0x6143 (the RTC offset, sweet_rtc_set) */
+-		return (addr == 0x088fu && len == 1) || (addr >= 0x6140u && addr + len <= 0x6144u);
++		/* 1207: PON PS_HOLD_RST_CTL 0x85a / _CTL2 0x85b, the PS_HOLD reset type (warm reset after a panic) */
++		return (addr == 0x088fu && len == 1) || (addr >= 0x6140u && addr + len <= 0x6144u) ||
++		       ((addr == 0x085au || addr == 0x085bu) && len == 1);
+ 	}
+ 	if (sid != 3) {
+ 		return false;
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -12,6 +12,7 @@
+ 
+ extern "C" int sweet_reboot_restart(int panic_restart);
+ extern "C" void sweet_reboot_note_panic(void);
++extern "C" void sweet_reboot_panic_done(void);
+ #include "../../../bsd/dev/sweet_board.h"
+ #include "../../../bsd/dev/sweet_spmi.h"
+ 
+@@ -48,7 +49,8 @@
+ /*
+  * Reset path (bsd/dev/sweet_reboot.c, Poco F1: PS_HOLD + reboot reason).
+  * Other boards, and every type not handled here, keep the stock behaviour.
+- * Panics only reset with boot-arg sweetreboot=bootloader (the helper checks).
++ * 1207: a panic saves its log to pstore and resets once the paniclog is complete
++ * (kPEPanicDiagnosticsDone; the restart types are a fallback), per boot-arg sweetpanic.
+  */
+ int
+ SweetPlatformExpert::haltRestart(unsigned int type)
+@@ -57,10 +59,13 @@
+ 	case kPEPanicBegin:
+ 	case kPEPanicSync:
+ 	case kPEPanicDiagnosticsInProgress:
+-	case kPEPanicDiagnosticsDone:
+ 		sweet_reboot_note_panic();
+ 		break;
++	case kPEPanicDiagnosticsDone:
++		sweet_reboot_panic_done();
++		break;
+ 	case kPEPanicRestartCPU:
++	case kPEPanicRestartCPUNoCallouts:
+ 		sweet_reboot_note_panic();
+ 		(void)sweet_reboot_restart(1);
+ 		break;
+diff --git a/pexpert/arm/pe_init.c b/pexpert/arm/pe_init.c
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -125,6 +125,43 @@
+ 	}
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET) && !defined(PLATFORM_PANIC_LOG_PADDR)
++/*
++ * sweet: no iBoot, so the ADT has no "pram" and gPanicBase stays 0. Then panic_info is NULL and
++ * SavePanicInfo() spins forever right after the first panic line: no paniclog, no backtraces, no
++ * kPEPanicDiagnosticsDone, no restart. Fallback panic region: 512 KiB of DRAM that is not kernel
++ * RAM and that a warm reset keeps, inside the Linux ramoops carve-out of the Qualcomm phones
++ * (ramoops@b0000000, 4 MiB; LineageOS on the Mi 8 Pro: six 256 KiB dmesg records first, so this
++ * is records 1-2; record 0 at 0xb0000000 is where bsd/dev/sweet_reboot.c puts the pstore copy).
++ * Only used when the range is outside the kernel's RAM (sweet itself runs from 0xb0000000).
++ * Boot-arg sweetpram=0: off (old behaviour).
++ */
++#define SWEET_PRAM_PA   0xb0040000ULL
++#define SWEET_PRAM_SIZE 0x80000u
++
++static boolean_t
++sweet_pram_fallback(void)
++{
++	uint32_t on = 1;
++	boot_args *ba = (boot_args *)PE_state.bootArgs;
++
++	(void)PE_parse_boot_argn("sweetpram", &on, sizeof(on));
++	if (!on || !ba) {
++		return FALSE;
++	}
++	if (SWEET_PRAM_PA < ba->physBase + ba->memSize && ba->physBase < SWEET_PRAM_PA + SWEET_PRAM_SIZE) {
++		return FALSE;
++	}
++	gPanicBase = ml_io_map_wcomb(SWEET_PRAM_PA, SWEET_PRAM_SIZE);
++	if (!gPanicBase) {
++		return FALSE;
++	}
++	panic_text_len = SWEET_PRAM_SIZE - sizeof(struct embedded_panic_header);
++	gPanicSize = SWEET_PRAM_SIZE;
++	return TRUE;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET && !PLATFORM_PANIC_LOG_PADDR */
++
+ static void
+ check_for_panic_log(void)
+ {
+@@ -155,6 +192,11 @@
+ 	 * embedded-panic-log-size is the maximum amount of data to store in the buffer
+ 	 */
+ 	if (kSuccess != SecureDTLookupEntry(0, "pram", &entry)) {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		if (sweet_pram_fallback()) {
++			goto sweet_have_region;
++		}
++#endif
+ 		return;
+ 	}
+ 
+@@ -189,6 +231,9 @@
+ 	}
+ #endif /* DEVELOPMENT && defined(XNU_TARGET_OS_BRIDGE) */
+ 
++#endif
++#if defined(ARM64_BOARD_CONFIG_SWEET) && !defined(PLATFORM_PANIC_LOG_PADDR)
++sweet_have_region:
+ #endif
+ 	panic_info = (struct embedded_panic_header *)gPanicBase;
+ 
