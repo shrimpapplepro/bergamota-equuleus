@@ -9,10 +9,12 @@
 #   phonectl state                      los | los-booting | fastboot | ios | none
 #   phonectl wait STATE [SECONDS]       until the phone reaches STATE (default 240 s)
 #   phonectl shot [NAME]                screenshot to $SHOTS/NAME.png (prints the path)
-#   phonectl tap X Y                    iOS: points (414x896); LineageOS: pixels (1080x2248)
+#   phonectl tap X Y                    iOS: screenshot points (414x896); LineageOS: pixels (1080x2248)
 #   phonectl swipe X1 Y1 X2 Y2 [MS]
 #   phonectl home | power               home button / power button (power also wakes the screen)
-#   phonectl unlock                     iOS: wake, then swipe up (no passcode)
+#   phonectl unlock                     iOS: wake (home), then a fast swipe up (no passcode)
+#   (iOS: the screen sleeps after a while and screenshots are then black; `home` wakes it. A zone set by setclock
+#    reaches the status bar only after SpringBoard restarts, e.g. the next boot.)
 #   phonectl sh 'COMMAND'               shell command on whichever system is up
 #   phonectl setclock                   iOS: clock from the Mac, stored by sweetclock; zone = the Mac's zone
 #   phonectl klog [FILE]                listen for the iOS kernel log on UDP 5140 (foreground)
@@ -32,6 +34,9 @@ IOS_IMG=${PHONECTL_IOS_IMG:-$HERE/../../enxerto/out/equuleus-boot26-3-wifi.img}
 SHOTS=${PHONECTL_SHOTS:-/Volumes/DEEZNUTS/mi8pro-remote/shots}
 
 ios() { ssh "${SSHO[@]}" $IOS "$@"; }
+
+# Screenshot points (414x896) -> sweettouch's own 375x812 space; a 5th number (swipe MS) passes through.
+pts() { awk -v a="$*" 'BEGIN { n = split(a, v, " "); for (i = 1; i <= n; i++) printf "%s%s", (i > 4 ? v[i] : (i % 2 ? v[i] * 375 / 414 : v[i] * 812 / 896)), (i < n ? " " : "") }'; }
 
 state() {
 	if adb -s 5d37c8ba get-state 2>/dev/null | grep -q device; then
@@ -68,7 +73,7 @@ shot)
 	[ -s $out ] && echo $out || { echo "phonectl: empty screenshot" >&2; exit 1; } ;;
 tap|swipe)
 	case $(need los ios) in
-	ios) ios sweettouch $cmd "$@" ;;
+	ios) ios sweettouch $cmd $(pts "$@") ;;
 	*) adb -s 5d37c8ba shell input $cmd "$@" ;;
 	esac ;;
 home|power)
@@ -78,7 +83,8 @@ home|power)
 	esac ;;
 unlock)
 	need ios >/dev/null
-	ios 'sweettouch lock; sleep 1; sweettouch swipe 207 880 207 250 300' ;;
+	# home wakes without toggling (power would turn an awake screen off); a slow swipe does not unlock
+	ios "sweettouch home; sleep 0.7; sweettouch swipe $(pts 207 885 207 300 150)" ;;
 sh)
 	case $(need los los-booting ios) in
 	ios) ios "$@" ;;

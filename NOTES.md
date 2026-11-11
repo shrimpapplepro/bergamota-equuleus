@@ -2,6 +2,17 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 09:53: remote control without hands, `tools/equuleus/phonectl` <<<
+User away from the phone: "Make a way for you to watch, control test and reboot the phone". Verified end to end over
+USB from the Mac: LineageOS -> `phonectl boot-ios` (`adb reboot recovery` boots the iOS 26 image on `recovery`, SSH
+after 56-86 s) -> `setclock` (offset stored; survived a LineageOS boot) -> `unlock` -> `tap` Settings (opened) ->
+`boot-los` (`sweetreboot normal`, LineageOS + adb root after 37 s) -> `boot-ios` again -> home screen, correct time.
+`shot` writes PNGs to the external drive. Gotchas: `sweettouch` takes a 375x812 space (phonectl scales screenshot
+points 414x896); the screen sleeps and screenshots go black (`home` wakes, `power` toggles); a slow swipe does not
+unlock; the USB network dropped once for a few seconds at first boot (no reboot). A hang with no SSH and no panic would
+still need hands (no watchdog); a panic reboots into LineageOS (boot partition). iOS 26 Wi-Fi: not joined on the new
+root (password not stored), widgets "Waiting...", wallpaper not set yet.
+
 ### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 09:4x: iOS 26 back on the phone; macOS input = trackpad on the display <<<
 * **Phone now (observed, nothing rebooted):** user: "Put ios 26 in recovery instead. Remove ios 18? 26 is better
   anyway." `ios_root` (sda23) = iOS 26.6.2 root again (sha256 ae1d65f5..., read back from the phone and compared);
