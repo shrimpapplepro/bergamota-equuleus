@@ -13,7 +13,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 HOST=${SWEET_HOST:-root@192.168.7.2}
 BUNDLE=${BUNDLE:-research/ios18poc}
-DIR=/var/root/ios18poc
+DIR=${POCDIR:-/var/root/ios18poc}
 mkdir -p research/ios18
 PUSH=1; DIAG=1
 while [ $# -gt 0 ]; do
@@ -27,7 +27,7 @@ while [ $# -gt 0 ]; do
 done
 if [ $# -eq 0 ]; then set -- expr 6 '*' 7; fi
 [ -x "$BUNDLE/dyld" ] || { echo "no bundle in $BUNDLE: run tools/renegade/fetch-ramdisk.sh and tools/renegade/mkbundle.py (docs/IOS18_PORT.md)" >&2; exit 1; }
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=8 $HOST"
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=8 ${SSH_OPTS:-} $HOST"
 
 echo "== phone: $($SSH 'uname -a' 2>&1)"
 BA=$($SSH 'sysctl -n kern.bootargs 2>/dev/null' 2>&1)

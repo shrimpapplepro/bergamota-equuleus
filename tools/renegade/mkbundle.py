@@ -26,8 +26,34 @@ PACSTRIP = os.path.join(HERE, 'pacstrip.py')
 LC_LOAD_DYLIB, LC_LOAD_WEAK, LC_REEXPORT, LC_LAZY, LC_UPWARD = 0xC, 0x80000018, 0x8000001F, 0x20, 0x80000023
 
 
-def deps(path):
+def thin(path):
+    """The file's bytes, or only its arm64e slice (else arm64) when it is a universal binary (macOS ships those)."""
     b = open(path, 'rb').read()
+    if b[:4] not in (b'\xca\xfe\xba\xbe', b'\xca\xfe\xba\xbf'):
+        return b
+    fat64, n = b[3] == 0xbf, struct.unpack_from('>I', b, 4)[0]
+    slices = []
+    for i in range(n):
+        if fat64:
+            ct, cs, off, size = struct.unpack_from('>iiQQ', b, 8 + 32 * i)
+        else:
+            ct, cs, off, size = struct.unpack_from('>iiII', b, 8 + 20 * i)
+        if ct == 0x0100000c:
+            slices.append((cs & 0xff, b[off:off + size]))
+    for want in (2, 0):
+        for sub, data in slices:
+            if sub == want:
+                return data
+    raise SystemExit(f'{path}: no arm64 slice')
+
+
+def copy_thin(src, dst):
+    with open(dst, 'wb') as f:
+        f.write(thin(src))
+
+
+def deps(path):
+    b = thin(path)
     ncmds = struct.unpack_from('<I', b, 16)[0]
     off, out = 32, []
     for _ in range(ncmds):
@@ -65,7 +91,8 @@ def main():
     os.makedirs(a.out + '/lib')
     os.makedirs(a.out + '/Frameworks')
 
-    todo, seen, libs = [os.path.join(a.root, 'bin', b) for b in bins], set(), {}
+    # a bare NAME is ROOT/bin/NAME; a path with a slash (usr/bin/plutil) is taken relative to ROOT
+    todo, seen, libs = [os.path.join(a.root, b if '/' in b else 'bin/' + b) for b in bins], set(), {}
     while todo:
         f = todo.pop()
         for d, weak in deps(f):
@@ -89,10 +116,11 @@ def main():
     for rel, d in libs.items():
         dst = os.path.join(a.out, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.copy(os.path.join(a.root, d.lstrip('/')), dst)
+        copy_thin(os.path.join(a.root, d.lstrip('/')), dst)
         files.append((dst, []))
     for b in bins:
-        shutil.copy(os.path.join(a.root, 'bin', b), a.out + '/bin/' + b)
+        src, b = os.path.join(a.root, b if '/' in b else 'bin/' + b), os.path.basename(b)
+        copy_thin(src, a.out + '/bin/' + b)
         files.append((a.out + '/bin/' + b, ['--dylinker', a.install_dir + '/dyld']))
     for p, extra in files:
         os.chmod(p, 0o755)
