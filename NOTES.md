@@ -2,6 +2,26 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 21:25: panics reboot by themselves and leave a log (patch 1207, building) <<<
+User: "Make it auto reboot when see a panic. And log it."
+* Why panics hung: no iBoot, so the ADT has no `pram`, gPanicBase = 0 ("debug_log_init: Error!! gPanicBase is still
+  not initialized"), panic_info NULL, and arm64 `SavePanicInfo()` spins forever right after the first panic line. No
+  paniclog, no kPEPanicDiagnosticsDone, no restart (and debug=0xc has DB_NMI = panicDebugging, which never restarts).
+* Patch 1207 (CI run 43027788486): pe_init.c gives the board a panic region when the ADT has none: 0xb0040000 +
+  512 KiB (inside LineageOS's ramoops@b0000000 4 MiB carve-out, outside XNU RAM 0x100000000+; skipped if it overlaps
+  kernel RAM, as on sweet; `sweetpram=0` off). At kPEPanicDiagnosticsDone SweetPlatformExpert calls
+  `sweet_reboot_panic_done()`: paniclog + other log + console tail (msgbuf) -> ramoops dmesg record 0 (0xb0000000,
+  persistent_ram_buffer sig 0x43474244, "====0.0-D" header), screen line "SWEET PANIC: log saved ...; reset to X in
+  N s", wait `sweetpanicwait` (default 10 s), PM8998 PON PS_HOLD reset type -> warm (0x85a=0x01, 0x85b bit 7; SPMI
+  whitelist extended to those two bytes), reason, PS_HOLD. `sweetpanic=normal|bootloader|recovery|bergamota|off`,
+  default normal (LineageOS), bootloader if `sweetreboot=bootloader`. No printf inside the panic path.
+* Verified before writing it: LineageOS kernel 4.9.337, ramoops 0x400000@0xb0000000 (record/console/ftrace 256 KiB,
+  pmsg 2 MiB, ecc 0); a pmsg marker survived `adb reboot pstoretest` (warm reset keeps that DRAM); after it PON
+  0x85a=0x01, 0x85b=0x80.
+* Reading: `tools/equuleus/phonectl panics` (LineageOS) saves `/sys/fs/pstore/dmesg-ramoops-*` to
+  `/Volumes/DEEZNUTS/mi8pro-remote/panics/` and erases them. Untested on the phone until the kernel is built.
+* Panics before IOKit's platform expert exists still just stop (no gIOPlatform to call).
+
 ### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 20:39: macOS 27.2 launchd RUNS as PID 1, aborted at its first spawn <<<
 * The "hang" below was a panic on screen (user's photo): `initproc exited -- exit reason namespace 2 subcode 0x6`
   (OS_REASON_SIGNAL, SIGABRT). The console ring at the end of `ios_data` has the whole boot: HFSX root mounted,
