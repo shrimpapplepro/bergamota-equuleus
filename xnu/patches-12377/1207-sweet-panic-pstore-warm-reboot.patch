@@ -377,14 +377,17 @@ diff --git a/bsd/dev/sweet_reboot.c b/bsd/dev/sweet_reboot.c
 diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
 --- a/bsd/dev/sweet_spmi.c
 +++ b/bsd/dev/sweet_spmi.c
-@@ -249,7 +249,9 @@
- 	}
+@@ -252,10 +252,11 @@
  	if (sid == 0) {
- 		/* PON spare (reboot reason); RTC alarm data 0x6140-0x6143 (the RTC offset, sweet_rtc_set) */
--		return (addr == 0x088fu && len == 1) || (addr >= 0x6140u && addr + len <= 0x6144u);
-+		/* 1207: PON PS_HOLD_RST_CTL 0x85a / _CTL2 0x85b, the PS_HOLD reset type (warm reset after a panic) */
-+		return (addr == 0x088fu && len == 1) || (addr >= 0x6140u && addr + len <= 0x6144u) ||
-+		       ((addr == 0x085au || addr == 0x085bu) && len == 1);
+ 		/*
+ 		 * PON spare (reboot reason); RTC alarm data 0x6140-0x6143 (the RTC offset, sweet_rtc_set); RTC alarm
+-		 * control 0x6146 (patch 0262: disarm an alarm another OS left armed, so the offset can be stored)
++		 * control 0x6146 (patch 0262: disarm an alarm another OS left armed, so the offset can be stored);
++		 * PON PS_HOLD_RST_CTL 0x85a / _CTL2 0x85b (patch 1207: warm reset type after a panic)
+ 		 */
+ 		return (addr == 0x088fu && len == 1) || (addr >= 0x6140u && addr + len <= 0x6144u) ||
+-		       (addr == 0x6146u && len == 1);
++		       (addr == 0x6146u && len == 1) || ((addr == 0x085au || addr == 0x085bu) && len == 1);
  	}
  	if (sid != 3) {
  		return false;
