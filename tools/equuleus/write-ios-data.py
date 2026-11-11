@@ -5,7 +5,8 @@
   write-ios-data.py IMG [--dry-run]   write only the 1 MiB blocks whose sha1 differs from IMG.phone, then verify
 
 IMG.phone holds the sha1 of every 1 MiB block as last written to the phone (the builder's IMG.blocks has the same
-format). Offsets are computed here (Android's mksh arithmetic is 32-bit). Never writes anything but
+format). It is only true until the root is booted read-write: then the changed-block mode refuses (block 0, the HFS
+volume header, differs) and only --full is safe. Offsets are computed here (Android's mksh arithmetic is 32-bit). Never writes anything but
 /dev/block/by-name/ios_data, and refuses an image larger than the partition minus its last 8 MiB (console ring).
 """
 import hashlib
@@ -82,6 +83,12 @@ def main():
         if not os.path.exists(manifest):
             sys.exit(f'no {manifest}: run with --full first')
         old = open(manifest).read().split()
+        # A booted root (ufsrw=1 rootrw=1) changes the phone after the last write, and the manifest no longer says
+        # what is there: writing only "changed" blocks would then mix two file system states (seen 2026-11-12). The
+        # HFS volume header (block 0) is rewritten on every read-write mount, so compare that block first.
+        b0 = subprocess.run(ADB + ['exec-out', f'dd if={PART} bs=1048576 count=1 2>/dev/null'], capture_output=True).stdout
+        if hashlib.sha1(b0).hexdigest() != old[0]:
+            sys.exit('the phone\'s ios_data changed since the last write (booted read-write?): use --full')
         idx = [i for i, h in enumerate(new) if i >= len(old) or old[i] != h]
     runs = runs_of(idx)
     print(f'{len(new)} blocks, {len(idx)} to write in {len(runs)} runs (hashing {time.time() - t0:.0f}s)', flush=True)

@@ -1,0 +1,33 @@
+diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1986,7 +1986,29 @@
+ 		printf("pid %d exited -- exit reason namespace %d subcode 0x%llx, description %s\n", proc_getpid(p),
+ 		    p->p_exit_reason->osr_namespace, p->p_exit_reason->osr_code, exit_reason_desc ?
+ 		    exit_reason_desc : "none");
++	}
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * sweet (boot-arg sweetcritical=0, bring-up): a critical process other than launchd that exits badly is logged
++	 * and not turned into a panic. launchd marks its boot tasks critical; on this hardware several macOS 27 boot
++	 * tasks fail (init_featureflags aborts, tzinit exits 2) and each one panicked the full macOS root at boot.
++	 * launchd itself (initproc) still panics.
++	 */
++	{
++		static int sweet_critical = -1;
++		if (sweet_critical < 0) {
++			int on = 1;
++			PE_parse_boot_argn("sweetcritical", &on, sizeof(on));
++			sweet_critical = on;
++		}
++		if (!sweet_critical && p != initproc) {
++			printf("SWEET CRITICAL: %s[%d] exited (signal %d, exit %d); not panicking (sweetcritical=0)\n",
++			    p->p_name, proc_getpid(p), WTERMSIG(rv), WEXITSTATUS(rv));
++			return;
++		}
+ 	}
++#endif
+ 
+ 	const char *prefix_str;
+ 	char prefix_str_buf[128];
