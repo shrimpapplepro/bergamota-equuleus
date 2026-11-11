@@ -5,9 +5,11 @@ A port of [Bergamota](https://github.com/ry-diffusion/Bergamota), which runs iOS
 
 This is an experiment, not a usable phone OS. Apple's security model is mostly switched off, so do not put personal data on it.
 
-## iOS 26 with Wi-Fi (2026-11-11, in progress)
+**State of the test phone (2026-11-11):** both iOS installs were removed from the phone to make room for a macOS experiment ([notes](docs/MACOS27_FEASIBILITY.md)). `recovery` holds LineageOS Recovery again and the iOS partitions are empty. The sections below describe what was reached; it can be rebuilt from this repository.
 
-iOS 26.6.2 (23G90) boots to the home screen from its own partition (`ios_root`), started from the Mac with `fastboot boot`. It is not installed as a boot option yet; iOS 18 stays on `recovery`.
+## iOS 26 with Wi-Fi (2026-11-11, parked)
+
+iOS 26.6.2 (23G90) booted to the home screen from its own partition (`ios_root`), started from the Mac with `fastboot boot`. It was never installed as a boot option.
 
 | Feature | State |
 | --- | --- |
