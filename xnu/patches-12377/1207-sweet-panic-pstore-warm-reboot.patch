@@ -430,51 +430,46 @@ diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPl
 diff --git a/pexpert/arm/pe_init.c b/pexpert/arm/pe_init.c
 --- a/pexpert/arm/pe_init.c
 +++ b/pexpert/arm/pe_init.c
-@@ -125,6 +125,43 @@
- 	}
- }
- 
+@@ -122,8 +122,38 @@
+ 			bcopy(prop, buffer, size);
+ 			buffer[size - 1] = '\0';
+ 		}
++	}
++}
++
 +#if defined(ARM64_BOARD_CONFIG_SWEET) && !defined(PLATFORM_PANIC_LOG_PADDR)
 +/*
 + * sweet: no iBoot, so the ADT has no "pram" and gPanicBase stays 0. Then panic_info is NULL and
 + * SavePanicInfo() spins forever right after the first panic line: no paniclog, no backtraces, no
-+ * kPEPanicDiagnosticsDone, no restart. Fallback panic region: 512 KiB of DRAM that is not kernel
-+ * RAM and that a warm reset keeps, inside the Linux ramoops carve-out of the Qualcomm phones
-+ * (ramoops@b0000000, 4 MiB; LineageOS on the Mi 8 Pro: six 256 KiB dmesg records first, so this
-+ * is records 1-2; record 0 at 0xb0000000 is where bsd/dev/sweet_reboot.c puts the pstore copy).
-+ * Only used when the range is outside the kernel's RAM (sweet itself runs from 0xb0000000).
++ * kPEPanicDiagnosticsDone, no restart. Fallback panic region: a static, cacheable kernel buffer.
++ * It does not need to survive the reset: bsd/dev/sweet_reboot.c copies the finished paniclog into
++ * Linux's ramoops (pstore) before resetting. Not DRAM outside the kernel through ml_io_map_wcomb:
++ * this early only WCOMB/IO mappings exist, and the bzero() below (DC ZVA) took an alignment fault
++ * on that mapping (first 1207 boot: ESR 0x96000061 at the region base + 0x40).
 + * Boot-arg sweetpram=0: off (old behaviour).
 + */
-+#define SWEET_PRAM_PA   0xb0040000ULL
-+#define SWEET_PRAM_SIZE 0x80000u
++#define SWEET_PRAM_SIZE 0x40000u
++static char sweet_pram[SWEET_PRAM_SIZE] __attribute__((aligned(16384)));
 +
 +static boolean_t
 +sweet_pram_fallback(void)
 +{
 +	uint32_t on = 1;
-+	boot_args *ba = (boot_args *)PE_state.bootArgs;
 +
 +	(void)PE_parse_boot_argn("sweetpram", &on, sizeof(on));
-+	if (!on || !ba) {
++	if (!on) {
 +		return FALSE;
-+	}
-+	if (SWEET_PRAM_PA < ba->physBase + ba->memSize && ba->physBase < SWEET_PRAM_PA + SWEET_PRAM_SIZE) {
-+		return FALSE;
-+	}
-+	gPanicBase = ml_io_map_wcomb(SWEET_PRAM_PA, SWEET_PRAM_SIZE);
-+	if (!gPanicBase) {
-+		return FALSE;
-+	}
+ 	}
++	gPanicBase = (vm_offset_t)sweet_pram;
 +	panic_text_len = SWEET_PRAM_SIZE - sizeof(struct embedded_panic_header);
 +	gPanicSize = SWEET_PRAM_SIZE;
 +	return TRUE;
-+}
+ }
 +#endif /* ARM64_BOARD_CONFIG_SWEET && !PLATFORM_PANIC_LOG_PADDR */
-+
+ 
  static void
  check_for_panic_log(void)
- {
-@@ -155,6 +192,11 @@
+@@ -155,6 +185,11 @@
  	 * embedded-panic-log-size is the maximum amount of data to store in the buffer
  	 */
  	if (kSuccess != SecureDTLookupEntry(0, "pram", &entry)) {
@@ -486,7 +481,7 @@ diff --git a/pexpert/arm/pe_init.c b/pexpert/arm/pe_init.c
  		return;
  	}
  
-@@ -189,6 +231,9 @@
+@@ -189,6 +224,9 @@
  	}
  #endif /* DEVELOPMENT && defined(XNU_TARGET_OS_BRIDGE) */
  
