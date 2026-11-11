@@ -40,8 +40,60 @@ Done from rooted adb in LineageOS, no reboot, GPT not touched. [V]
   entries stay, as room for macOS (89 GiB in all). Android's shell does 32-bit arithmetic: compute `dd` offsets for
   partitions over 4 GiB on the Mac.
 * Not touched: `boot` (LineageOS), `userdata` (sda21, 24 GiB, 745 MB used), bootloaders, modem, persist.
-* Still on the Mac: both boot images, `research/ios26/ios26-root-full.img` (17 GB) and the iOS 18 root image and IPSW
-  (26 GB, to be deleted when the space is needed). Both systems can be rebuilt from this repository.
+* Still on the Mac: both boot images and `research/ios26/ios26-root-full.img` (17 GB). The iOS 18 root image and the
+  extracted iOS 18 IPSW (26 GB) were deleted on 2026-11-11 for space; `research/ios18/full` and the `BuildManifest.plist`
+  stay. Both systems can be rebuilt from this repository.
+
+## Target: macOS 27.2 or higher (user, 2026-11-11)
+
+The user's target is macOS 27.2 or later, not 26.5, because macOS 27 has touchscreen support (for the touchscreen
+MacBook Pro). The 26.5 download was stopped and removed. macOS-uke stays a reference for the userland recipes only.
+
+### macOS 27.2 has a touchscreen input path, also in the virtual Mac kernel [V]
+
+* Kernel `kernelcache.release.vma2` of 26B123 contains `AppleMultitouchDriver` with the personality
+  `AppleMultitouchHIDService (0x0D,0x04)`: provider `IOHIDInterface`, HID usage page 0x0D (digitizer), usage 0x04
+  (touch screen), `Manufacturer` = `Apple`, `MT Built-In` = true, `parser-type` 1, `parser-options` 16. A second
+  personality `MTUserDevice` matches usage page 0xFF60, usage 7. So a HID device that reports itself as an Apple
+  touchscreen digitizer is taken by the multitouch driver as a built-in touchscreen.
+* Userland (dyld cache of 26B123): `BKHIDDirectTouchEventProcessor`, `BKDirectTouchState`,
+  `WSHitTestInfoForDirectTouchPoint`, `touchScreenDigitizerSender`, `anyBuiltinTouchscreenDigitizer`,
+  `userInteractedWithTouchScreen`, direct-touch gesture recognizers in MapKit. Virtualization has private
+  `_VZUSBTouchScreenConfiguration` and `_VZAppleTouchScreenConfiguration` (`UsbTouchScreen`, `AvpTouchScreen`).
+* Host macOS 27.3: the Touch pane of System Settings (`TouchExtension.appex`) reads the MobileGestalt key
+  `DisplaySupportsTouch`. The kext `AppleEmbeddedTouchEEPROMDriver` matches `display-generic-data,rw` (real hardware).
+* Not known: the exact HID report descriptor the driver expects, whether the user interface needs
+  `DisplaySupportsTouch` to react to touches, and what the Virtualization touchscreen device looks like on the wire. [U]
+
+### Reference: Leviidev/Henge (read 2026-11-11, origin/main 945c391, GPL-2.0)
+
+A virtual Mac without a hypervisor: arm64 to arm64 JIT with a software MMU, device model after QEMU's `vmapple`
+(GICv3, PL011, virtio, xHCI, Apple paravirtual GPU replayed with Metal). It boots the **stock** macOS 27.2 kernel and
+userland of `VirtualMac2,1`, so the kernel gap above does not exist there. Local copy: `~/dev/Henge` (branch `shrimp`,
+171 commits behind upstream), notes in `~/dev/henge-debug`.
+
+* PAC: the guest's pointer-authentication instructions become a strip or a no-op. Same idea as `pacstrip`, done at run
+  time.
+* Touch: Henge has **no touchscreen device**. It presents the screen as a Magic Trackpad 2 on USB (`devices/xhci.c`,
+  usage page 0x0D usage 0x05 = touch pad; tap = click). Changing that device to a touchscreen digitizer
+  (0x0D/0x04, manufacturer Apple) is the cheapest test of the path above, and it can be done on the Mac (`hengevm`)
+  with no phone involved.
+* What it gives this project: (1) proof that the 27.2 virtual-Mac userland runs with no SPTM, TXM or SEP; (2) a test
+  bench on the Mac with an EL0 syscall trace (`HV_SVC_LOG` in the local tree), to list what the 27.2 userland asks of
+  the kernel and compare it with XNU 12377; (3) the `vma2` device tree; (4) the place to develop the touchscreen HID
+  device.
+
+### Two routes to macOS 27.2 on this phone [U, neither tried]
+
+1. **Native:** the kernel this fork boots (XNU 12377.121.6 with this phone's drivers) + the 27.2 `VirtualMac2,1`
+   userland rewritten with `pacstrip`. Real speed, real drivers. Risks: userland one major release newer than the
+   kernel; `AppleMultitouchDriver` and the graphics stack are closed kernel extensions that would have to come from
+   the 27.2 kernel cache or be replaced; the phone's touch driver must present the 0x0D/0x04 device.
+2. **Henge on the phone:** port Henge's engine to run under LineageOS (or bare metal) and boot the stock 27.2 kernel.
+   No kernel gap. Risks: the engine copies most guest instructions unchanged and the Snapdragon 845 (ARMv8.2) lacks
+   instructions the 27.2 code uses (see the census above: at least PAC, MTE, FJCVTZS, FCMLA need handling); Henge
+   assumes 16 KB host pages; its GPU backend is Metal only; speed (27.2 is already the slowest system on an
+   iPhone 17 Pro).
 
 ## Reference: iOSNJBrepo/macOS-uke (read 2026-11-11)
 
@@ -71,7 +123,8 @@ DarwinBoot, NativeUfs).
   Adreno 630 is a different generation (a6xx). Turnip itself ran on this GPU under Chlorophyll (NOTES.md, 2026-10-26).
 * **Unknown here:** an iOS-configured kernel under a macOS userland (platform checks, macOS-only user clients); macOS on
   an HFS root as Bergamota uses, or APFS support in this kernel; kernel extensions from the KDK in this kernel.
-* Host space: their guide asks for about 120 GB free. This Mac has 20 GiB internal and 72 GiB on DEEZNUTS.
+* Host space: their guide asks for about 120 GB free. This Mac has 45 GiB internal and about 230 GiB on DEEZNUTS
+  (2026-11-11, after the cleanup).
 * macOS 26.5 IPSW: `https://updates.cdn-apple.com/2026SpringFCS/fullrestores/122-58869/DFB1CEEF-5619-4591-9924-E20DB2C8FED0/UniversalMac_26.5_25F71_Restore.ipsw`
 
 ## Open questions (not started)
@@ -84,5 +137,6 @@ DarwinBoot, NativeUfs).
 * Root: system volume `141-12228-170.dmg.aea` (11.3 GB) + cryptexes (2.4 GB + App) on one HFS volume; size against the
   31 GiB `ios_root` and what replaces which root is the user's decision.
 * WindowServer without a Metal device: unknown. Chlorophyll has no macOS build (and no iOS 26 build yet).
-* Input: macOS has no touch UI; touch as a pointer, a keyboard, or screen sharing over the USB network.
-* Mac disk: 20 GiB free on the internal disk, 78 GiB on DEEZNUTS.
+* Input: macOS 27 has a touchscreen path (section "Target" above). First test: a 0x0D/0x04 HID touchscreen in Henge
+  on the Mac. Fallback: touch as a pointer, as macOS-uke does.
+* Census tool and outputs are kept in `/Volumes/DEEZNUTS/mac27-study/census/`.

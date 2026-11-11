@@ -2,7 +2,7 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 later: iOS REMOVED from the phone, next experiment is macOS <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 later: iOS REMOVED from the phone, next experiment is macOS 27.2+ <<<
 Read `docs/MACOS27_FEASIBILITY.md` first. User: "Remove all the stuff on xiaomi but lineageos", then macOS ("ideally
 macOS Golden Gate" = 27), reference repo iOSNJBrepo/macOS-uke (macOS 26.5 on the Xiaomi Pad 7).
 * **Phone now (observed):** `recovery` = LineageOS Recovery (restored from the backup, read-back sha256 0171ce01...);
@@ -10,10 +10,17 @@ macOS Golden Gate" = 27), reference repo iOSNJBrepo/macOS-uke (macOS 26.5 on the
   untouched. No reboot was done after the change, so Lineage Recovery has not been started yet.
 * **Parked, nothing written:** iOS 26 on `recovery` (`enxerto/out/equuleus-boot26-3-wifi.img`), Chlorophyll for iOS 26,
   Safari on iOS 26, 5 GHz Wi-Fi. The sections below are history.
-* **Plan (not started, a guess until tried):** macOS 26.5 first, on the kernel this fork already boots
-  (`xnu/out-12377-1203` is XNU 12377.121.6, the macOS 26.5 kernel release) with a `pacstrip` root and the userland
-  recipes from macOS-uke. Its own kernel (macOS-ForSheng) needs hardware PAC, which the SDM845 lacks. macOS 27 after.
-* Mac: the iOS 18 root image and IPSW in `research/ios18` (26 GB) may be deleted for space (user). Not deleted yet.
+* **Target changed by the user (2026-11-11): macOS 27.2 or higher, not 26.5**, because macOS 27 supports touchscreens.
+  Observed: the 27.2 virtual-Mac kernel (`kernelcache.release.vma2`, 26B123) has `AppleMultitouchHIDService
+  (0x0D,0x04)`, which takes an Apple HID touchscreen digitizer as a built-in touchscreen; the userland has the
+  direct-touch classes. Second reference repo from the user: Leviidev/Henge (JIT virtual Mac, boots stock macOS 27.2;
+  its touch is a Magic Trackpad 2 emulation, it has no touchscreen device). Details and the two routes (native kernel
+  12377 + 27.2 userland, or Henge's engine on the phone) are in `docs/MACOS27_FEASIBILITY.md`, section "Target".
+* **Next step proposed, not started, no phone involved:** in Henge on the Mac, replace the trackpad HID device with a
+  0x0D/0x04 touchscreen and see whether macOS 27.2 treats it as direct touch. The macOS 26.5 download was stopped and
+  removed; macOS-uke (kernel needs hardware PAC, which the SDM845 lacks) is kept for its userland recipes only.
+* Mac: the iOS 18 root image and the extracted iOS 18 IPSW in `research/ios18` (26 GB) were deleted for space on
+  2026-11-11 (user allowed it). `research/ios26/ios26-root-full.img` and all boot images are kept.
 
 ### >>> Mi 8 Pro (equuleus) fork, 2026-11-11: iOS 26 BOOTS to the home screen, Wi-Fi WORKS (boot26-3, `fastboot boot`) <<<
 First boot of `enxerto/out/equuleus-boot26-1.img` (kernel `xnu/out-12377-1203`, root on `ios_root`), observed over SSH,
