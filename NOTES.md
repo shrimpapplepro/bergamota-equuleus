@@ -2,7 +2,23 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 22:10: panic auto-reboot + log (patch 1207), third build running <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 22:35: macOS 27.2 BOOTS to an SSH shell; panics now auto-reboot with a log <<<
+* `enxerto/out/equuleus-mac27-mini-2.img` (kernel = 1207 build run 43035383573, includes 1206; mini-1 cmdline, see
+  scratchpad mac27-mini.cmdline) RAM-booted 22:29:07 with the unchanged mini root on `ios_data`. SSH (dropbear-mac)
+  answered at once: `uname` Darwin 25.5.0 xnu-12377.121.6, SystemVersion macOS 27.2 26B123 (ReleaseType Restore),
+  PID 1 /sbin/launchd (27.2), dropbear + syslogd running, `security.mac.lockdown_mode_state_public: 0`, 8 CPUs,
+  hw.memsize 6383730688. Open: cluster0 at 100 % load in the cpufreq stats (find who spins); phonectl `state` says
+  "ios" for any SSH-reachable system.
+* Panic test: `kill -SEGV 1` is refused (EPERM, init is protected). Built `sweetpanic` (scratchpad paniccmd/, macOS
+  arm64, reboot(2) RB_PANIC + message; any user on DEVELOPMENT kernels), copied to /usr/local/bin on the mac root.
+  22:34:10 panic -> 4 s later off USB -> 38 s LineageOS with boot_completed, no hands. `phonectl panics` saved
+  `/Volumes/DEEZNUTS/mi8pro-remote/panics/20261111-223500-dmesg-ramoops-0.txt` (136 KB): full Apple paniclog (panic
+  string, boot-args, all 8 cores' PCs, panicked task + backtrace, zone info), other log, msgbuf tail. RB_PANIC
+  unmounted the root cleanly first.
+* Also seen: after a Power-held hard reset, LineageOS still had the previous console-ramoops, so that RAM survives
+  hard resets too.
+
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 22:10: panic auto-reboot + log (patch 1207) (history) <<<
 * 1st 1207 build (run 43027788486) failed to apply: my rebuild of sweet_spmi.c had skipped 1202/1204 (patches that
   start with `--- a/` and no `diff --git` line). Fixed; 2nd build 43029468155 OK.
 * 2nd build, booted as `equuleus-mac27-mini-2.img` at 21:55: early panic, never reached USB (user's photo): "Invalid
