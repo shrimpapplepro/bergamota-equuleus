@@ -1,0 +1,122 @@
+#!/bin/zsh
+# phonectl: watch, drive and reboot the Mi 8 Pro (equuleus) from the Mac, with nobody at the phone.
+#
+# The phone stays on USB to the Mac. Two systems:
+#   LineageOS  boot partition (default boot), adb serial 5d37c8ba, rooted adb
+#   iOS 26     recovery partition (equuleus-boot26-3-wifi.img), USB network 192.168.7.2, SSH key-only
+# plus fastboot (bootloader) in between.
+#
+#   phonectl state                      los | los-booting | fastboot | ios | none
+#   phonectl wait STATE [SECONDS]       until the phone reaches STATE (default 240 s)
+#   phonectl shot [NAME]                screenshot to $SHOTS/NAME.png (prints the path)
+#   phonectl tap X Y                    iOS: points (414x896); LineageOS: pixels (1080x2248)
+#   phonectl swipe X1 Y1 X2 Y2 [MS]
+#   phonectl home | power               home button / power button (power also wakes the screen)
+#   phonectl unlock                     iOS: wake, then swipe up (no passcode)
+#   phonectl sh 'COMMAND'               shell command on whichever system is up
+#   phonectl setclock                   iOS: clock from the Mac, stored by sweetclock; zone = the Mac's zone
+#   phonectl klog [FILE]                listen for the iOS kernel log on UDP 5140 (foreground)
+#   phonectl boot-ios                   from LineageOS: reboot to recovery (= iOS 26); from fastboot: RAM boot of the
+#                                       same image (nothing written)
+#   phonectl boot-los                   from iOS or fastboot: back to LineageOS (and adb root)
+#   phonectl fastboot                   from iOS or LineageOS: to the bootloader
+#
+# Never writes a partition. The serial is spelled out on every adb/fastboot call on purpose (a second adb
+# device is often connected).
+set -u
+IOS=root@192.168.7.2
+SSHO=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=4
+      -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o BatchMode=yes)
+HERE=${0:A:h}
+IOS_IMG=${PHONECTL_IOS_IMG:-$HERE/../../enxerto/out/equuleus-boot26-3-wifi.img}
+SHOTS=${PHONECTL_SHOTS:-/Volumes/DEEZNUTS/mi8pro-remote/shots}
+
+ios() { ssh "${SSHO[@]}" $IOS "$@"; }
+
+state() {
+	if adb -s 5d37c8ba get-state 2>/dev/null | grep -q device; then
+		if [ "$(adb -s 5d37c8ba shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; then echo los; else echo los-booting; fi
+	elif fastboot devices 2>/dev/null | grep -q 5d37c8ba; then echo fastboot
+	elif ios true 2>/dev/null; then echo ios
+	else echo none; fi
+}
+
+waitfor() {
+	local want=$1 secs=${2:-240} t0=$SECONDS s
+	while (( SECONDS - t0 < secs )); do
+		s=$(state)
+		[ "$s" = "$want" ] && { echo "$want after $((SECONDS - t0)) s"; return 0; }
+		sleep 3
+	done
+	echo "timeout after $secs s, state $(state)"; return 1
+}
+
+need() { local s; s=$(state); [[ " $* " == *" $s "* ]] || { echo "phonectl: phone is '$s', need: $*" >&2; exit 1; }; echo $s; }
+
+cmd=${1:-state}; shift 2>/dev/null
+case $cmd in
+state) state ;;
+wait) waitfor "$@" ;;
+shot)
+	[ -d /Volumes/DEEZNUTS ] || { echo "phonectl: DEEZNUTS not mounted" >&2; exit 1; }
+	mkdir -p $SHOTS
+	out=$SHOTS/${1:-$(date +%Y%m%d-%H%M%S)}.png
+	case $(need los los-booting ios) in
+	ios) ios 'sweetshot /private/var/tmp/shot.png 2 >/dev/null && cat /private/var/tmp/shot.png' > $out ;;
+	*) adb -s 5d37c8ba exec-out screencap -p > $out ;;
+	esac
+	[ -s $out ] && echo $out || { echo "phonectl: empty screenshot" >&2; exit 1; } ;;
+tap|swipe)
+	case $(need los ios) in
+	ios) ios sweettouch $cmd "$@" ;;
+	*) adb -s 5d37c8ba shell input $cmd "$@" ;;
+	esac ;;
+home|power)
+	case $(need los ios) in
+	ios) [ $cmd = home ] && ios sweettouch home || ios sweettouch lock ;;
+	*) [ $cmd = home ] && adb -s 5d37c8ba shell input keyevent KEYCODE_HOME || adb -s 5d37c8ba shell input keyevent KEYCODE_POWER ;;
+	esac ;;
+unlock)
+	need ios >/dev/null
+	ios 'sweettouch lock; sleep 1; sweettouch swipe 207 880 207 250 300' ;;
+sh)
+	case $(need los los-booting ios) in
+	ios) ios "$@" ;;
+	*) adb -s 5d37c8ba shell "$@" ;;
+	esac ;;
+setclock)
+	need ios >/dev/null
+	zone=$(readlink /etc/localtime | sed 's|.*/zoneinfo/||')
+	ios "date -u @$(date +%s) >/dev/null && sweetclock && ln -sf /usr/share/zoneinfo/$zone /private/var/db/timezone/localtime && date" ;;
+klog)
+	exec python3 -I -c '
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("0.0.0.0", 5140))
+f = open(sys.argv[1], "ab", buffering=0) if len(sys.argv) > 1 else sys.stdout.buffer
+while True:
+    d, _ = s.recvfrom(65536)
+    f.write(d if d.endswith(b"\n") else d + b"\n")
+    f.flush()
+' "$@" ;;
+boot-ios)
+	case $(need los los-booting fastboot) in
+	fastboot) [ -f $IOS_IMG ] || { echo "phonectl: no $IOS_IMG" >&2; exit 1; }; fastboot -s 5d37c8ba boot $IOS_IMG ;;
+	*) adb -s 5d37c8ba reboot recovery ;;
+	esac
+	waitfor ios ${1:-240} ;;
+boot-los)
+	case $(need ios fastboot) in
+	ios) ios 'sweetreboot normal' ;;
+	fastboot) fastboot -s 5d37c8ba reboot ;;
+	esac
+	waitfor los ${1:-300} && { adb -s 5d37c8ba root >/dev/null; sleep 3; adb -s 5d37c8ba wait-for-device; echo "adb root: uid $(adb -s 5d37c8ba shell id -u | tr -d '\r')"; } ;;
+fastboot)
+	case $(need ios los los-booting) in
+	ios) ios 'sweetreboot fastboot' ;;
+	*) adb -s 5d37c8ba reboot bootloader ;;
+	esac
+	waitfor fastboot ${1:-120} ;;
+*) sed -n '2,25p' $0 | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
