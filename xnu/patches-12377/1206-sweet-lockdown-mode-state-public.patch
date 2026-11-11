@@ -1,0 +1,20 @@
+diff --git a/bsd/kern/lockdown_mode.c b/bsd/kern/lockdown_mode.c
+--- a/bsd/kern/lockdown_mode.c
++++ b/bsd/kern/lockdown_mode.c
+@@ -39,6 +39,16 @@
+
+ SYSCTL_DECL(_security_mac);
+ SYSCTL_INT(_security_mac, OID_AUTO, lockdown_mode_state, CTLFLAG_RD | CTLFLAG_LOCKED, &lockdown_mode_state, 0, "Lockdown Mode state");
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/*
++ * sweet: macOS 27 libsystem_darwin's os_lockdown_mode_enabled() reads
++ * security.mac.lockdown_mode_state_public and aborts when it is missing (the
++ * kext that registers it on a Mac is not in this kernel). macOS 27.2 launchd
++ * calls it before every spawn, so PID 1 died at its first job. Same value as
++ * lockdown_mode_state, read-only.
++ */
++SYSCTL_INT(_security_mac, OID_AUTO, lockdown_mode_state_public, CTLFLAG_RD | CTLFLAG_LOCKED, &lockdown_mode_state, 0, "Lockdown Mode state (public)");
++#endif
+
+ __startup_func
+ void
