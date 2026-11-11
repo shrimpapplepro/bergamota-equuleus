@@ -46,6 +46,7 @@ from targets import T as TARGET  # noqa: E402
 MAGICS = {b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xca\xfe\xba\xbf'}
 MIN_FREE = int(os.environ.get('RENEGADE_MIN_FREE_GB', '5')) << 30     # free-space floor kept on the host disk
 W = os.path.join(ROOT, TARGET['work'], 'full')             # work dir (mount points, map)
+CACHE_REL = 'System/Library/Caches/com.apple.dyld'         # dyld cache dir in the root (mkroot-mac27-full.py: System/Library/dyld)
 
 
 def log(*a):
@@ -235,9 +236,9 @@ def prune_after(root, name):
     """Things that are dead weight on the phone (disk is tight, and so is the flash)."""
     if name == 'sysos':
         # 870 MB of local symbols for symbolication; dyld does not read it
-        for f in os.listdir(os.path.join(root, 'System/Library/Caches/com.apple.dyld')):
+        for f in os.listdir(os.path.join(root, CACHE_REL)):
             if f.endswith('.symbols'):
-                os.unlink(os.path.join(root, 'System/Library/Caches/com.apple.dyld', f))
+                os.unlink(os.path.join(root, CACHE_REL, f))
                 log('removed cache', f)
     if name == 'os':
         shutil.rmtree(os.path.join(root, 'usr/standalone/update'), ignore_errors=True)   # OTA ramdisk firmware, 206 MB
@@ -257,9 +258,9 @@ def layout_fixes(root):
         if os.path.lexists(p):
             os.unlink(p)
         os.symlink('../../..', p)
-    dyld = os.path.join(root, 'System/Library/Caches/com.apple.dyld')
+    dyld = os.path.join(root, CACHE_REL)
     assert os.path.exists(os.path.join(dyld, 'dyld_shared_cache_arm64e')), 'no dyld cache in the root'
-    log('layout: cache at /System/Library/Caches/com.apple.dyld,', len(os.listdir(dyld)), 'files; cryptex mount points -> /')
+    log(f'layout: cache at /{CACHE_REL},', len(os.listdir(dyld)), 'files; cryptex mount points -> /')
 
 
 # --- stage: macho ---------------------------------------------------------------------------------------------------
@@ -304,7 +305,7 @@ def macho_worker(path):
 
 def stage_macho(a, root):
     need_free('macho stage')
-    skip_prefix = os.path.join(root, 'System/Library/Caches/com.apple.dyld')
+    skip_prefix = os.path.join(root, CACHE_REL)
     rplat.prepare_signer()                   # Linux: fetch/verify the pinned ldid once, before the pool starts
     inode_first, links, files = {}, [], []
     for r, dirs, fs in os.walk(root):
@@ -369,7 +370,7 @@ def stage_macho(a, root):
 # --- stage: cache ---------------------------------------------------------------------------------------------------
 def stage_cache(a, root):
     need_free('cache stage')
-    d = os.path.join(root, 'System/Library/Caches/com.apple.dyld')
+    d = os.path.join(root, CACHE_REL)
     # --stubs: iOS 26 caches keep cross-image stubs in __TEXT_STUBS sub-caches outside every image section, ending
     # in BRAA x16, x17 (first iOS 26 boot: launchd SIGILL there); iOS 18's islands were plain adrp/add/br
     run([sys.executable, '-I', os.path.join(HERE, 'pacstrip_cache.py'), d, '--jobs', str(a.jobs), '--stubs'])
