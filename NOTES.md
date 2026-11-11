@@ -2,6 +2,23 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 20:39: macOS 27.2 launchd RUNS as PID 1, aborted at its first spawn <<<
+* The "hang" below was a panic on screen (user's photo): `initproc exited -- exit reason namespace 2 subcode 0x6`
+  (OS_REASON_SIGNAL, SIGABRT). The console ring at the end of `ios_data` has the whole boot: HFSX root mounted,
+  `/sbin/launchd` (27.2, "Darwin Bootstrapper 7.0.0") ran, said hello, did its boot tasks in restore mode, loaded
+  syslogd/dropbear/hello and aborted while spawning `org.sweet.dropbear`.
+* Cause (symbolicated): launchd calls `os_lockdown_mode_enabled()` (libsystem_darwin) before a spawn; that reads
+  `security.mac.lockdown_mode_state_public`, which this kernel lacks (xnu only has `lockdown_mode_state`; the
+  `_public` one comes from a kext), and its `.cold.1` path aborts on ENOENT. Fix: patch 1206 registers
+  `security.mac.lockdown_mode_state_public` (same value, read-only). CI run 43022022935 (macos_version=26.5).
+* Checked the other sysctls launchd/libxpc/libsystem_* read that the kernel lacks (amfi developer_mode_status/resolved,
+  amfi allow_only_platform_code, sandbox.sentinel, kern.proc.all): all handle failure, no abort.
+* Restore mode comes from `ReleaseType = Restore` in the ramdisk's SystemVersion.plist (also `rd=md0` or
+  os_variant_is_basesystem). Kept on purpose for the mini root (skips mount/data-volume boot tasks); the full root
+  will not have it. Log also says "No task-access server configured" (no taskgated yet).
+* A launchd crash panics and the panic screen hangs (wdt=-1): every failed try needs Power held ~10 s by hand.
+* Next: boot image `equuleus-mac27-mini-2.img` = mini-1 cmdline with the 1206 kernel; root on `ios_data` unchanged.
+
 ### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 13:37: first macOS 27.2 root boot HUNG with no log (needs a hard reset) <<<
 * Root: `tools/renegade/mkroot-mac27-mini.py` = the 27.2 restore ramdisk as a 2 GiB HFSX root (restore jobs removed,
   syslogd kept, dropbear-mac on 22, `org.sweet.mac27.hello` to /dev/console, 524 Mach-Os pacstripped, owners applied,
