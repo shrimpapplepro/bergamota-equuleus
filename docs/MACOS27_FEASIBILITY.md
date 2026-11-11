@@ -144,9 +144,36 @@ Henge worktree `~/dev/Henge-touch`, branch `touchscreen` (local only), stock mac
   behaves like the Magic Trackpad 2 Henge emulates (its report format and feature-report answers are in Henge's
   `devices/xhci.c`), mapping absolute panel touches to trackpad finger positions. Untested.
 
+## Stage 1 result: macOS 27.2 userland runs on this kernel (2026-11-11 13:02 CST) [V]
+
+On the phone, iOS 26 running, kernel xnu-12377.121.6 + patch 1205 (`enxerto/out/equuleus-boot26-4-vmgap.img` =
+boot26-3 + kernel `xnu/out-12377-1205` + `sweetvmgap=1`, RAM boot, nothing flashed; CI run 42958610393), these macOS
+27.2 (26B123) tools ran with macOS 27.2's own dyld and its whole shared cache: `echo`, `uname -a`, `date`, `id`,
+`ls -la`, `ps -A`, `plutil -p` (Foundation/CoreFoundation). So the kernel gap (27.2 userland on the 26.5-era kernel)
+did not stop basic userland. How:
+* Bundle `research/mac27poc` (`tools/renegade/mkbundle.py` from the 27.2 restore ramdisk `141-12288-175.dmg`; macOS
+  binaries are universal, mkbundle now thins them) installed at `/var/root/mac27poc`; the tools' `LC_LOAD_DYLINKER`
+  points at the bundle's dyld.
+* The macOS cache is needed: dyld otherwise adopts the iOS 26 cache already mapped (same `arm64e` magic) and rejects
+  its libSystem as "wrong platform"; `DYLD_LIBRARY_PATH` cannot override cache dylibs, `DYLD_SHARED_REGION=avoid` is
+  simulator-only. Run with `DYLD_SHARED_REGION=private DYLD_SHARED_CACHE_DIR=/var/root/mac27poc/cache`.
+* Cache: `/Volumes/DEEZNUTS/mac27-study/cache-pacstrip` = the 26B123 cache rewritten by `pacstrip_cache.py --stubs` +
+  `fips_rehmac.py --patch` (2.5 min). The USB network does ~1 MB/s, so it went in through LineageOS instead: root
+  pulled with adb (33 min), cache added on the Mac, only the 6,697 changed MiB written back (19 runs), full-image
+  sha256 equal on both sides (b5876d29...).
+* Fix 1, kernel patch 1205: dyld maps a private cache with `MAP_FIXED` over the range the dropped shared region left
+  empty; xnu reports that as `kGUARD_EXC_DEALLOC_GAP`, fatal for platform binaries (every binary on the root is one
+  here, patch 0035). `sweetvmgap=1` skips that report (logged as `SWEET VMGAP`). Only the private-cache test needs it.
+* Fix 2, test-only cache patch: iOS launchd sets `kern.osvariant_status` in the iOS layout; macOS libdarwin trusts it,
+  finds the macOS-only bits unset and calls `os_crash("os_variant had unexpected status")` (SIGTRAP in
+  `libSystem_initializer`). `DYLD_INSERT_LIBRARIES` was ignored, so the `bl sysctlbyname` read at 0x181ed260c
+  (libsystem_darwin, sub-cache .01) became `mov w0,#1` and the page hash was recomputed. On a macOS root, macOS
+  launchd sets the status itself.
+* Gotcha: a 130 MB copy over the USB network arrived 48 KB short once; always compare hashes.
+
 ## Open questions (not started)
 
-* Stage 1, cheap and non-destructive: one macOS 27 command-line binary with macOS 27's own dyld and libSystem from the
+* ~~Stage 1~~ DONE, see above. Original plan: one macOS 27 command-line binary with macOS 27's own dyld and libSystem from the
   restore ramdisk (`141-12288-175.dmg`), rewritten with `pacstrip`, run over SSH on the running iOS 26 system
   (`tools/renegade/mkbundle.py`, as in `docs/IOS18_PORT.md`). It tests the kernel gap directly. The iOS 26 root was
   written back to `ios_root` on 2026-11-11 (hash verified), so this can run once iOS 26 is booted from `recovery`.

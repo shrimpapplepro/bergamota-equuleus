@@ -2,6 +2,13 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 13:02: macOS 27.2 userland RUNS on this kernel (stage 1 passed) <<<
+macOS 27.2 `echo`/`uname`/`date`/`id`/`ls`/`ps`/`plutil` ran on the phone with macOS 27.2's dyld and PAC-stripped
+shared cache on xnu-12377 + patch 1205 (`sweetvmgap=1`, image `enxerto/out/equuleus-boot26-4-vmgap.img`, RAM boot).
+Details, both fixes and how the cache got onto the phone: `docs/MACOS27_FEASIBILITY.md` "Stage 1 result". Phone now:
+`ios_root` holds the iOS 26 root + `/var/root/mac27poc` (bundle + 6.7 GB macOS cache, 6 GB free left); `recovery`
+still boot26-3 (no 1205). Next: stage 3, a macOS 27.2 root on `ios_data`.
+
 ### >>> Mi 8 Pro (equuleus) fork, 2026-11-11 09:53: remote control without hands, `tools/equuleus/phonectl` <<<
 User away from the phone: "Make a way for you to watch, control test and reboot the phone". Verified end to end over
 USB from the Mac: LineageOS -> `phonectl boot-ios` (`adb reboot recovery` boots the iOS 26 image on `recovery`, SSH
