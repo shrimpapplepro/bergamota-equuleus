@@ -1,0 +1,56 @@
+diff --git a/bsd/kern/syscalls.master b/bsd/kern/syscalls.master
+--- a/bsd/kern/syscalls.master
++++ b/bsd/kern/syscalls.master
+@@ -437,11 +437,12 @@
+ 290	AUE_GETWGROUPS	ALL	{ int getwgroups(user_addr_t setlen, user_addr_t guidset) NO_SYSCALL_STUB; }
+ 291	AUE_MKFIFO_EXTENDED	ALL	{ int mkfifo_extended(user_addr_t path, uid_t uid, gid_t gid, int mode, user_addr_t xsecurity) NO_SYSCALL_STUB; }
+ 292	AUE_MKDIR_EXTENDED	ALL	{ int mkdir_extended(user_addr_t path, uid_t uid, gid_t gid, int mode, user_addr_t xsecurity) NO_SYSCALL_STUB; }
+-; sweet 1212: without CONFIG_EXT_RESOLVER, identitysvc (macOS opendirectoryd registers with it) returns ENOSYS, not SIGSYS
++; sweet 1212/1218: without CONFIG_EXT_RESOLVER, identitysvc is sweet_identitysvc (bsd/kern/sweet_amfi.c): macOS
++; opendirectoryd registers as the identity resolver and then waits for work, which never comes (ENOSYS made it spin)
+ #if CONFIG_EXT_RESOLVER
+ 293	AUE_IDENTITYSVC	ALL	{ int identitysvc(int opcode, user_addr_t message) NO_SYSCALL_STUB; }
+ #else
+-293	AUE_NULL	ALL	{ int enosys(void); }
++293	AUE_IDENTITYSVC	ALL	{ int sweet_identitysvc(int opcode, user_addr_t message) NO_SYSCALL_STUB; }
+ #endif
+ 294	AUE_NULL	ALL	{ int shared_region_check_np(uint64_t *start_address) NO_SYSCALL_STUB; }
+ 295	AUE_NULL	ALL	{ int nosys(void); } { old shared_region_map_np }
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -1084,3 +1084,34 @@
+ }
+ 
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
++
++/*
++ * Patch 1218: identitysvc (syscall 293) without CONFIG_EXT_RESOLVER (patch 0057 dropped it for iOS). macOS 27's
++ * opendirectoryd registers as the kernel's identity resolver (KAUTH_EXTLOOKUP_REGISTER) and then loops on
++ * KAUTH_EXTLOOKUP_WORKER | RESULT waiting for requests; ENOSYS (1212) made that loop spin at 100 % CPU. Here:
++ * register / deregister / cache calls succeed (cache sizes read as 0), and a worker call sleeps until a signal,
++ * as the real one does while no lookup is pending (this kernel never submits any).
++ */
++#if !CONFIG_EXT_RESOLVER
++#include <sys/sysproto.h>
++#include <sys/kauth.h>
++
++static int sweet_identitysvc_chan;
++
++int
++sweet_identitysvc(__unused struct proc *p, struct sweet_identitysvc_args *uap, __unused int32_t *retval)
++{
++	const int op = uap->opcode;
++
++	if (op & (KAUTH_EXTLOOKUP_WORKER | KAUTH_EXTLOOKUP_RESULT)) {
++		/* no lookups are ever submitted: wait like an idle resolver thread, until a signal */
++		int error = tsleep(&sweet_identitysvc_chan, PCATCH | PUSER, "identitysvc", 0);
++		return error ? error : EINTR;
++	}
++	if (op == KAUTH_GET_CACHE_SIZES && uap->message != USER_ADDR_NULL) {
++		uint32_t sz[2] = {0, 0};    /* struct kauth_cache_sizes { kcs_group_size, kcs_id_size } */
++		return copyout(sz, uap->message, sizeof(sz));
++	}
++	return 0;                   /* REGISTER, DEREGISTER, SET_CACHE_SIZES, CLEAR_CACHES */
++}
++#endif /* !CONFIG_EXT_RESOLVER */

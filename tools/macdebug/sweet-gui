@@ -1,0 +1,11 @@
+#!/bin/sh
+# sweet-gui: start the GUI stack by hand (staged jobs, kept): LaunchServices, storagekitd, WindowServer, loginwindow.
+for l in com.apple.coreservices.launchservicesd com.apple.coreservicesd com.apple.lsd com.apple.storagekitd \
+    com.apple.WindowServer com.apple.loginwindow; do
+	sweet-try $l 60 >/dev/null 2>&1        # (sweet-try clears the keep file when it starts)
+	touch /var/tmp/sweet-keep.$l
+done
+launchctl kickstart system/com.apple.WindowServer
+sleep 10
+launchctl kickstart system/com.apple.loginwindow
+echo started

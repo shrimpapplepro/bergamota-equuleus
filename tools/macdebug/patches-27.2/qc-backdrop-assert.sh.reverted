@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+[ "$(dd if=/System/Library/dyld/dyld_shared_cache_arm64e.03 bs=1 skip=94589500 count=4 2>/dev/null | od -An -tx1 | tr -d " \n")" = "8a782036" ] || { echo "old word at 94589500 differs"; exit 1; }
+printf '\037\040\003\325' | dd of=/System/Library/dyld/dyld_shared_cache_arm64e.03 bs=1 seek=94589500 conv=notrunc 2>/dev/null
+printf '\355\237\357\050\225\356\034\346\342\302\103\067\275\072\073\251\170\052\253\101\010\250\357\267\102\224\071\213\317\245\072\013' | dd of=/System/Library/dyld/dyld_shared_cache_arm64e.03 bs=1 seek=131207810 conv=notrunc 2>/dev/null
+sync; echo patched
