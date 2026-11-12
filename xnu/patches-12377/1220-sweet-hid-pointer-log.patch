@@ -1,0 +1,12 @@
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -722,6 +722,8 @@
+ 	const unsigned old = fButtons;
+ 	fButtons = buttons & 0x7;
+ 	IOHIDEvent *event = IOHIDEvent::relativePointerEvent(mach_absolute_time(), dx, dy, 0, fButtons, old, 0);
++	IOLog("SWEET HID: pointer move dx=%d dy=%d btn=0x%x -> %u clients, event %s\n", dx, dy, fButtons,
++	    _clients ? _clients->getCount() : 0, event ? "ok" : "NULL");
+ 	if (event) {
+ 		dispatchEvent(event);
+ 		event->release();
