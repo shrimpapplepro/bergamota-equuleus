@@ -84,6 +84,20 @@ HELLO = """<?xml version="1.0" encoding="UTF-8"?>
 <key>StandardOutPath</key><string>/dev/console</string><key>StandardErrorPath</key><string>/dev/console</string>
 </dict></plist>
 """
+REBOOTD = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>org.sweet.rebootd</string>
+<key>ProgramArguments</key><array><string>/usr/local/bin/sweet-rebootd</string></array>
+<key>KeepAlive</key><true/><key>RunAtLoad</key><true/><key>UserName</key><string>root</string>
+<key>POSIXSpawnType</key><string>Interactive</string>
+<key>StandardErrorPath</key><string>/dev/console</string>
+</dict></plist>
+"""
+# Our launch jobs: SSH, the boot hello, and the remote reboot (tools/equuleus/rebootd: TCP 5141, no user lookups,
+# so `phonectl rescue` works when a crash-looping daemon makes SSH logins hang; nobody may be at the phone).
+SWEET_JOBS = (('org.sweet.dropbear.plist', DROPBEAR), ('org.sweet.mac27.hello.plist', HELLO),
+              ('org.sweet.rebootd.plist', REBOOTD))
 
 
 def macho_worker_mac(path):
@@ -179,7 +193,7 @@ def stage_tweaks(a, root, table):
             log('  allow-list labels with no plist:', missing)
 
     ld = os.path.join(root, 'System/Library/LaunchDaemons')
-    for name, text in (('org.sweet.dropbear.plist', DROPBEAR), ('org.sweet.mac27.hello.plist', HELLO)):
+    for name, text in SWEET_JOBS:
         p = os.path.join(ld, name)
         open(p, 'w').write(text)
         os.chmod(p, 0o644)
@@ -194,6 +208,10 @@ def stage_tweaks(a, root, table):
     sb = os.path.join(ROOT, 'research/ssh-build/out')
     put(os.path.join(sb, 'dropbear-mac'), 'usr/local/bin/dropbear', 0o755)
     put(os.path.join(sb, 'toybox-mac'), 'usr/local/bin/toybox', 0o755)
+    rb = os.path.join(ROOT, 'tools/equuleus/rebootd/out/sweet-rebootd')
+    if not os.path.exists(rb):
+        subprocess.run([os.path.join(ROOT, 'tools/equuleus/rebootd/build.sh')], check=True)
+    put(rb, 'usr/local/bin/sweet-rebootd', 0o755)
     for d in ('usr/local', 'usr/local/bin', 'private/etc/dropbear'):
         table[d] = (0, 0, 0o755)
     for k in ('dropbear_ed25519_host_key', 'dropbear_ecdsa_host_key'):
@@ -227,7 +245,7 @@ def stage_tweaks(a, root, table):
     jobs = c['LaunchDaemons']
     keep = {k: v for k, v in jobs.items() if k.startswith('/System/Library/LaunchDaemons/') and isinstance(v, dict)
             and v.get('Label') in allow}
-    for name, text in (('org.sweet.dropbear.plist', DROPBEAR), ('org.sweet.mac27.hello.plist', HELLO)):
+    for name, text in SWEET_JOBS:
         keep['/System/Library/LaunchDaemons/' + name] = plistlib.loads(text.encode())
     c['LaunchDaemons'] = keep
     with open(cache, 'wb') as f:
