@@ -1,0 +1,98 @@
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -33,6 +33,7 @@
+ #include <sys/proc.h>
+ #include <sys/persona.h>
+ #include <sys/systm.h>
++#include <sys/sysctl.h>
+ #include <sys/ubc_internal.h>
+ #include <sys/vnode.h>
+ #include <machine/atomic.h>
+@@ -610,7 +611,40 @@
+ };
+ 
+ static mac_policy_handle_t sweet_amfi_name_mac_handle;
++
++/*
++ * Patch 1213: a policy named "Quarantine" for userland's __mac_syscall("Quarantine", ...). macOS ships
++ * Quarantine.kext; without it the call fails with ENOPOLICY and macOS 27's cfprefsd exits 254 right after
++ * op 87 (every `defaults`/CFPreferences user then waits forever). Nothing is quarantined here: every op
++ * answers 0 without writing anything back; each op is logged once. iOS userland never calls it.
++ */
++static uint64_t sweet_qtn_ops_seen[4];
++
++static int
++sweet_qtn_syscall(struct proc *p, int call, user_addr_t arg)
++{
++#pragma unused(arg)
++	if (call >= 0 && call < 256 && !(sweet_qtn_ops_seen[call / 64] & (1ULL << (call % 64)))) {
++		sweet_qtn_ops_seen[call / 64] |= 1ULL << (call % 64);
++		char name[32];
++		proc_name(proc_pid(p), name, sizeof(name));
++		printf("SWEET QTN: %s __mac_syscall(\"Quarantine\", %d) -> 0 (stand-in)\n", name, call);
++	}
++	return 0;
++}
+ 
++static const struct mac_policy_ops sweet_qtn_mac_ops = {
++	.mpo_policy_syscall = sweet_qtn_syscall,
++};
++
++static struct mac_policy_conf sweet_qtn_mac_conf = {
++	.mpc_name = "Quarantine",
++	.mpc_fullname = "SWEET Quarantine userland interface stand-in",
++	.mpc_ops = &sweet_qtn_mac_ops,
++};
++
++static mac_policy_handle_t sweet_qtn_mac_handle;
++
+ /* Called from bsd_init once MAC policies can register, before any exec. */
+ void sweet_amfi_policy_register(void);
+ 
+@@ -626,6 +660,9 @@
+ 	error = mac_policy_register(&sweet_sandbox_mac_conf, &sweet_sandbox_mac_handle, NULL);
+ 	printf("SWEET Sandbox: permissive policy %s (%d)\n",
+ 	    error ? "NOT registered" : "registered", error);
++	error = mac_policy_register(&sweet_qtn_mac_conf, &sweet_qtn_mac_handle, NULL);
++	printf("SWEET QTN: \"Quarantine\" syscall policy %s (%d)\n",
++	    error ? "NOT registered" : "registered", error);
+ }
+ 
+ /*
+@@ -649,7 +686,35 @@
+ static int sweet_syserr_state;                  /* 0 = not parsed, 1 = off, 2 = on */
+ static uint64_t sweet_syserr_keys[SWEET_SYSERR_MAX];
+ static int _Atomic sweet_syserr_count;
++
++/*
++ * Patch 1213: kern.sweet_syserr_names (root, string): read = the traced process names; write = trace these
++ * instead ("-" = off) and start counting from 0 again, so a daemon can be traced without a reboot.
++ */
++static int
++sweet_syserr_names_sysctl SYSCTL_HANDLER_ARGS
++{
++#pragma unused(arg1, arg2)
++	char buf[sizeof(sweet_syserr_names)];
++	strlcpy(buf, sweet_syserr_names, sizeof(buf));
++	int error = sysctl_handle_string(oidp, buf, sizeof(buf), req);
++	if (error || !req->newptr) {
++		return error;
++	}
++	size_t n = strlen(buf);
++	while (n && (buf[n - 1] == '\n' || buf[n - 1] == ' ')) {
++		buf[--n] = 0;
++	}
++	strlcpy(sweet_syserr_names, buf, sizeof(sweet_syserr_names));
++	sweet_syserr_state = (sweet_syserr_names[0] == '-') ? 1 : 2;
++	os_atomic_store(&sweet_syserr_count, 0, relaxed);
++	printf("SWEET ERR: tracing \"%s\" (sysctl), %d lines max\n", sweet_syserr_names, SWEET_SYSERR_MAX);
++	return 0;
++}
+ 
++SYSCTL_PROC(_kern, OID_AUTO, sweet_syserr_names, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0,
++    sweet_syserr_names_sysctl, "A", "Failed-syscall tracer: comma separated process names, * = all, - = off");
++
+ static uint64_t
+ sweet_syserr_hash(uint64_t h, const char *s)
+ {

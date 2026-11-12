@@ -6,7 +6,8 @@
 #   iOS 26     recovery partition (equuleus-boot26-3-wifi.img), USB network 192.168.7.2, SSH key-only
 # plus fastboot (bootloader) in between.
 #
-#   phonectl state                      los | los-booting | fastboot | ios | none
+#   phonectl state                      los | los-booting | fastboot | ios | ios-hung | none
+#                                       (ios-hung: SSH logins hang but sweet-rebootd answers on 5141)
 #   phonectl wait STATE [SECONDS]       until the phone reaches STATE (default 240 s)
 #   phonectl shot [NAME]                screenshot to $SHOTS/NAME.png (prints the path)
 #   phonectl tap X Y                    iOS: screenshot points (414x896); LineageOS: pixels (1080x2248)
@@ -22,6 +23,7 @@
 #                                       same image (nothing written)
 #   phonectl boot-los                   from iOS or fastboot: back to LineageOS (and adb root)
 #   phonectl fastboot                   from iOS or LineageOS: to the bootloader
+#   phonectl rescue [normal|fastboot|recovery]  iOS/macOS: reboot through sweet-rebootd (TCP 5141, no SSH needed)
 #   phonectl panics [keep]              LineageOS: save XNU panic logs (pstore dmesg-ramoops-*, written by kernel
 #                                       patch 1207 before its warm reset) to $PANICS, print their head, then erase
 #                                       them so the next panic gets a clean record (keep: do not erase)
@@ -38,6 +40,10 @@ SHOTS=${PHONECTL_SHOTS:-/Volumes/DEEZNUTS/mi8pro-remote/shots}
 PANICS=${PHONECTL_PANICS:-/Volumes/DEEZNUTS/mi8pro-remote/panics}
 
 ios() { ssh "${SSHO[@]}" $IOS "$@"; }
+# sweet-rebootd (tools/equuleus/rebootd) on TCP 5141: "ping" -> pong, "sweet-reboot MODE" -> reboot(2). Works when
+# SSH logins hang (no user lookups in it).
+rescue() { python3 -I -c 'import socket, sys
+s = socket.create_connection(("192.168.7.2", 5141), timeout=4); s.sendall((sys.argv[1] + "\n").encode()); print(s.recv(80).decode().strip())' "$1" 2>/dev/null; }
 
 # Screenshot points (414x896) -> sweettouch's own 375x812 space; a 5th number (swipe MS) passes through.
 pts() { awk -v a="$*" 'BEGIN { n = split(a, v, " "); for (i = 1; i <= n; i++) printf "%s%s", (i > 4 ? v[i] : (i % 2 ? v[i] * 375 / 414 : v[i] * 812 / 896)), (i < n ? " " : "") }'; }
@@ -47,6 +53,7 @@ state() {
 		if [ "$(adb -s 5d37c8ba shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; then echo los; else echo los-booting; fi
 	elif fastboot devices 2>/dev/null | grep -q 5d37c8ba; then echo fastboot
 	elif ios true 2>/dev/null; then echo ios
+	elif [ "$(rescue ping)" = pong ]; then echo ios-hung
 	else echo none; fi
 }
 
@@ -117,17 +124,21 @@ boot-ios)
 	esac
 	waitfor ios ${1:-240} ;;
 boot-los)
-	case $(need ios fastboot) in
-	ios) ios 'sweetreboot normal' ;;
+	case $(need ios ios-hung fastboot) in
+	ios) ios 'sweetreboot normal' || rescue 'sweet-reboot normal' ;;
+	ios-hung) rescue 'sweet-reboot normal' ;;
 	fastboot) fastboot -s 5d37c8ba reboot ;;
 	esac
 	waitfor los ${1:-300} && { adb -s 5d37c8ba root >/dev/null; sleep 3; adb -s 5d37c8ba wait-for-device; echo "adb root: uid $(adb -s 5d37c8ba shell id -u | tr -d '\r')"; } ;;
 fastboot)
-	case $(need ios los los-booting) in
-	ios) ios 'sweetreboot fastboot' ;;
+	case $(need ios ios-hung los los-booting) in
+	ios) ios 'sweetreboot fastboot' || rescue 'sweet-reboot fastboot' ;;
+	ios-hung) rescue 'sweet-reboot fastboot' ;;
 	*) adb -s 5d37c8ba reboot bootloader ;;
 	esac
 	waitfor fastboot ${1:-120} ;;
+rescue)
+	rescue "sweet-reboot ${1:-normal}" ;;
 panics)
 	need los >/dev/null
 	[ -d /Volumes/DEEZNUTS ] || { echo "phonectl: DEEZNUTS not mounted" >&2; exit 1; }
@@ -143,5 +154,5 @@ panics)
 		grep -m1 -a 'SWEET PANIC' $out; grep -m3 -a -E '^panic\(|Debugger message|initproc exited' $out
 		[ "${1:-}" = keep ] || adb -s 5d37c8ba shell "rm /sys/fs/pstore/$r"
 	done ;;
-*) sed -n '2,28p' $0 | sed 's/^# \{0,1\}//'; exit 2 ;;
+*) sed -n '2,31p' $0 | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
