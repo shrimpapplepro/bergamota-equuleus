@@ -56,11 +56,11 @@ DMG_NAMES = {'os': '141-12228-170.dmg', 'sysos': '141-12293-172.dmg', 'appos': '
 
 # Daemons kept for the first full boot: logging, notifications, configuration, directory services, disks.
 DEFAULT_JOBS = [
-    'com.apple.logd', 'com.apple.syslogd', 'com.apple.notifyd', 'com.apple.configd', 'com.apple.opendirectoryd',
-    'com.apple.diskarbitrationd', 'com.apple.securityd', 'com.apple.trustd', 'com.apple.mDNSResponder',
-    'com.apple.mDNSResponderHelper', 'com.apple.coreservicesd', 'com.apple.lsd', 'com.apple.cfprefsd.xpc.daemon',
-    'com.apple.distnoted.xpc.daemon', 'com.apple.kextd', 'com.apple.usermanagerd', 'com.apple.taskgated',
-    'com.apple.taskgated-helper', 'com.apple.UserEventAgent-System', 'com.apple.powerd',
+    # proven at boot on kernel 1213 (2026-11-12): all stay up, SSH unaffected, `defaults` and opendirectoryd answer
+    'com.apple.notifyd', 'com.apple.logd', 'com.apple.syslogd', 'com.apple.configd', 'com.apple.opendirectoryd',
+    'com.apple.diskarbitrationd', 'com.apple.securityd', 'com.apple.trustd', 'com.apple.powerd',
+    'com.apple.distnoted.xpc.daemon', 'com.apple.UserEventAgent-System', 'com.apple.bsd.dirhelper',
+    'com.apple.cfprefsd.xpc.daemon',
 ]
 
 DROPBEAR = """<?xml version="1.0" encoding="UTF-8"?>
@@ -212,6 +212,7 @@ def stage_tweaks(a, root, table):
     if not os.path.exists(rb):
         subprocess.run([os.path.join(ROOT, 'tools/equuleus/rebootd/build.sh')], check=True)
     put(rb, 'usr/local/bin/sweet-rebootd', 0o755)
+    put(os.path.join(ROOT, 'tools/macdebug/sweet-try'), 'usr/local/bin/sweet-try', 0o755)
     for d in ('usr/local', 'usr/local/bin', 'private/etc/dropbear'):
         table[d] = (0, 0, 0o755)
     for k in ('dropbear_ed25519_host_key', 'dropbear_ecdsa_host_key'):
