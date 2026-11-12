@@ -56,12 +56,25 @@ DMG_NAMES = {'os': '141-12228-170.dmg', 'sysos': '141-12293-172.dmg', 'appos': '
 
 # Daemons kept for the first full boot: logging, notifications, configuration, directory services, disks.
 DEFAULT_JOBS = [
-    # proven at boot on kernel 1213 (2026-11-12): all stay up, SSH unaffected, `defaults` and opendirectoryd answer
+    # the full set that boots to the desktop (2026-11-12): core daemons + the GUI/login/session stack
     'com.apple.notifyd', 'com.apple.logd', 'com.apple.syslogd', 'com.apple.configd', 'com.apple.opendirectoryd',
     'com.apple.diskarbitrationd', 'com.apple.securityd', 'com.apple.trustd', 'com.apple.powerd',
     'com.apple.distnoted.xpc.daemon', 'com.apple.UserEventAgent-System', 'com.apple.bsd.dirhelper',
     'com.apple.cfprefsd.xpc.daemon',
+    'com.apple.WindowServer', 'com.apple.loginwindow', 'com.apple.logind', 'com.apple.runningboardd',
+    'com.apple.tccd.system', 'com.apple.coreservices.appleevents', 'com.apple.security.syspolicy',
+    'com.apple.bluetoothd', 'com.apple.coreservices.launchservicesd', 'com.apple.coreservicesd', 'com.apple.lsd',
+    'com.apple.storagekitd', 'com.apple.security.agent.login', 'com.apple.security.authhost',
 ]
+
+# Aqua LaunchAgents to keep (the per-user session loads these from /System/Library/LaunchAgents at login): the
+# desktop (Dock, Finder, menu bar) plus the per-user service agents. Everything else moves to sweet-off.
+AGENT_ALLOW = {
+    'com.apple.Dock', 'com.apple.Finder', 'com.apple.controlcenter', 'com.apple.WindowManager',
+    'com.apple.coreservices.uiagent', 'com.apple.UserEventAgent-Aqua', 'com.apple.cfprefsd.xpc.agent',
+    'com.apple.distnoted.xpc.agent', 'com.apple.coreservices.useractivityd', 'com.apple.Spotlight',
+    'com.apple.wallpaper.agent', 'com.apple.notificationcenterui.agent', 'com.apple.pboard',
+}
 
 DROPBEAR = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -168,6 +181,97 @@ def seed_data_template(root, table):
     log(f'Data template: {added} entries merged into the root')
 
 
+FIRSTBOOT = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>org.sweet.firstboot</string>
+<key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string>
+<string>rm -f /var/run/*.didRunThisBoot; exit 0</string></array>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><false/>
+<key>StandardErrorPath</key><string>/dev/console</string>
+</dict></plist>
+"""
+
+
+def setup_desktop(root, table):
+    """Configure the root to boot straight to a logged-in desktop (test device): a local admin, auto-login, the
+    login authorization without the password-verify mechanism (opendirectoryd's PBKDF2 verify crashes on this
+    kernel), Setup Assistant skipped, Reduce Transparency (the software compositor cannot blur materials), and a
+    boot job that clears /var/run/*.didRunThisBoot (they persist on the single HFS root, so logind would otherwise
+    treat every boot as a restart and never create the console session)."""
+    import plistlib
+
+    def w(rel, data, mode, uid=0, gid=0, binary=False):
+        p = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        if isinstance(data, (bytes, bytearray)):
+            open(p, 'wb').write(data)
+        elif isinstance(data, str):
+            open(p, 'w').write(data)
+        else:
+            plistlib.dump(data, open(p, 'wb'), fmt=plistlib.FMT_BINARY if binary else plistlib.FMT_XML)
+        os.chmod(p, mode)
+        table[rel] = (uid, gid, mode)
+
+    # org.sweet.firstboot (also added to the launchd cache below, via the daemon dir)
+    w('System/Library/LaunchDaemons/org.sweet.firstboot.plist', FIRSTBOOT, 0o644)
+
+    # drop builtin:authenticate,privileged from system.login.console so auto-login does not hit the OD auth crash,
+    # and remove the built auth.db so authd rebuilds from the edited plist on first boot
+    authz = os.path.join(root, 'System/Library/Security/authorization.plist')
+    if os.path.exists(authz):
+        d = plistlib.load(open(authz, 'rb'))
+        m = d['rights']['system.login.console']['mechanisms']
+        d['rights']['system.login.console']['mechanisms'] = [x for x in m if x != 'builtin:authenticate,privileged']
+        plistlib.dump(d, open(authz, 'wb'), fmt=plistlib.FMT_XML)
+        for n in ('auth.db', 'auth.db-wal', 'auth.db-shm'):
+            f = os.path.join(root, 'private/var/db', n)
+            if os.path.exists(f):
+                os.remove(f)
+        log('authorization: system.login.console without builtin:authenticate; auth.db reset')
+
+    # local admin `mac` / `mac` (SALTED-SHA512-PBKDF2) in dslocal; add to the admin group
+    import hashlib
+    import uuid
+    salt, it = os.urandom(32), 45000
+    ent = hashlib.pbkdf2_hmac('sha512', b'mac', salt, it, dklen=128)
+    shadow = plistlib.dumps({'SALTED-SHA512-PBKDF2': {'entropy': ent, 'iterations': it, 'salt': salt}},
+                            fmt=plistlib.FMT_BINARY)
+    guid = str(uuid.uuid4()).upper()
+    user = {'name': ['mac'], 'realname': ['Mac'], 'uid': ['501'], 'gid': ['20'], 'home': ['/Users/mac'],
+            'shell': ['/bin/zsh'], 'generateduid': [guid], 'passwd': ['********'],
+            'authentication_authority': [';ShadowHash;HASHLIST:<SALTED-SHA512-PBKDF2>'], 'ShadowHashData': [shadow]}
+    w('private/var/db/dslocal/nodes/Default/users/mac.plist', user, 0o600)
+    adminp = os.path.join(root, 'private/var/db/dslocal/nodes/Default/groups/admin.plist')
+    if os.path.exists(adminp):
+        g = plistlib.load(open(adminp, 'rb'))
+        g.setdefault('groupmembers', [])
+        if guid not in g['groupmembers']:
+            g['groupmembers'].append(guid)
+        g.setdefault('users', [])
+        if 'mac' not in g['users']:
+            g['users'].append('mac')
+        plistlib.dump(g, open(adminp, 'wb'), fmt=plistlib.FMT_XML)
+    for d, mode in (('Users/mac', 0o755), ('Users/mac/Library', 0o700), ('Users/mac/Library/Preferences', 0o700)):
+        os.makedirs(os.path.join(root, d), exist_ok=True)
+        os.chmod(os.path.join(root, d), mode)
+        table[d] = (501, 20, mode)
+
+    # auto-login: kcpassword (Apple's fixed XOR key) + autoLoginUser
+    key = bytes([0x7D, 0x89, 0x52, 0x23, 0xD2, 0xBC, 0xDD, 0xEA, 0xA3, 0xB9, 0x1F])
+    pw = b'mac'
+    pw += b'\0' * (((len(pw) // 12) + 1) * 12 - len(pw))
+    w('private/etc/kcpassword', bytes(c ^ key[i % len(key)] for i, c in enumerate(pw)), 0o600)
+    w('Library/Preferences/com.apple.loginwindow.plist', {'autoLoginUser': 'mac'}, 0o644)
+
+    # Setup Assistant done; language; Reduce Transparency (system + the mac user)
+    w('private/var/db/.AppleSetupDone', '', 0o644)
+    w('Library/Preferences/.GlobalPreferences.plist', {'AppleLanguages': ['en-US'], 'AppleLocale': 'en_US'}, 0o644)
+    w('Library/Preferences/com.apple.universalaccess.plist', {'reduceTransparency': True}, 0o644)
+    w('Users/mac/Library/Preferences/com.apple.universalaccess.plist', {'reduceTransparency': True}, 0o600, 501, 20)
+    log('desktop: user mac (auto-login), setup done, reduce transparency')
+
+
 def stage_tweaks(a, root, table):
     import plistlib
     seed_data_template(root, table)
@@ -187,7 +291,9 @@ def stage_tweaks(a, root, table):
                 label = plistlib.load(open(p, 'rb')).get('Label')
             except Exception:
                 pass
-            if sub == 'LaunchDaemons' and (label in allow or n[:-6] in allow):
+            keep_here = (label in allow or n[:-6] in allow) if sub == 'LaunchDaemons' else \
+                (label in AGENT_ALLOW or n[:-6] in AGENT_ALLOW)
+            if keep_here:
                 kept.append(n)
                 continue
             os.rename(p, os.path.join(off, n))
@@ -223,6 +329,7 @@ def stage_tweaks(a, root, table):
     put(os.path.join(ROOT, 'tools/macdebug/sweet-try'), 'usr/local/bin/sweet-try', 0o755)
     for d in ('usr/local', 'usr/local/bin', 'private/etc/dropbear'):
         table[d] = (0, 0, 0o755)
+    setup_desktop(root, table)
 
     # authd requires `identifier "com.apple.SecurityAgent" and anchor apple` on its login agent; our binaries are
     # ad-hoc re-signed (no Apple anchor), so system.login.console fails and no login UI appears. Patch authd not to
@@ -277,6 +384,9 @@ def stage_tweaks(a, root, table):
             and v.get('Label') in allow}
     for name, text in SWEET_JOBS:
         keep['/System/Library/LaunchDaemons/' + name] = plistlib.loads(text.encode())
+    fb = os.path.join(root, 'System/Library/LaunchDaemons/org.sweet.firstboot.plist')
+    if os.path.exists(fb):
+        keep['/System/Library/LaunchDaemons/org.sweet.firstboot.plist'] = plistlib.load(open(fb, 'rb'))
     c['LaunchDaemons'] = keep
     with open(cache, 'wb') as f:
         plistlib.dump(c, f, fmt=plistlib.FMT_BINARY)
