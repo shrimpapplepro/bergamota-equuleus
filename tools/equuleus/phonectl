@@ -78,7 +78,12 @@ shot)
 	mkdir -p $SHOTS
 	out=$SHOTS/${1:-$(date +%Y%m%d-%H%M%S)}.png
 	case $(need los los-booting ios) in
-	ios) ios 'sweetshot /private/var/tmp/shot.png 2 >/dev/null && cat /private/var/tmp/shot.png' > $out ;;
+	ios) if ios 'command -v sweetshot >/dev/null'; then
+			ios 'sweetshot /private/var/tmp/shot.png 2 >/dev/null && cat /private/var/tmp/shot.png' > $out
+		else    # macOS root: no sweetshot; the kernel's frame copy (xnu 0224), made into a PNG here
+			ios 'sysctl -w kern.sweet_fb_shot_scale=2 >/dev/null; sysctl -b kern.sweet_fb_shot' > $out.raw &&
+			    python3 -I $HERE/../macdebug/fbshot2png.py $out.raw $out >/dev/null && rm -f $out.raw
+		fi ;;
 	*) adb -s 5d37c8ba exec-out screencap -p > $out ;;
 	esac
 	[ -s $out ] && echo $out || { echo "phonectl: empty screenshot" >&2; exit 1; } ;;
