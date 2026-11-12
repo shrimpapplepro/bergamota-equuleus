@@ -1,0 +1,131 @@
+diff --git a/iokit/Kernel/arm/hid/SweetHIDSystem.cpp b/iokit/Kernel/arm/hid/SweetHIDSystem.cpp
+--- a/iokit/Kernel/arm/hid/SweetHIDSystem.cpp
++++ b/iokit/Kernel/arm/hid/SweetHIDSystem.cpp
+@@ -25,6 +25,10 @@
+ #include <IOKit/IOService.h>
+ #include <IOKit/IOUserClient.h>
+ #include <IOKit/IOBufferMemoryDescriptor.h>
++#include <libkern/c++/OSArray.h>
++#include <libkern/c++/OSDictionary.h>
++#include <libkern/c++/OSNumber.h>
++#include <libkern/c++/OSCollectionIterator.h>
+ #include <pexpert/pexpert.h>
+ 
+ /* IOHIDShared.h, macOS SDK 2026 (EvGlobals version 4): sizes and offsets */
+@@ -70,9 +74,11 @@
+ 	virtual IOReturn setProperties(OSObject *properties) APPLE_KEXT_OVERRIDE;
+ 
+ 	void initShmem(void);
++	void publishParameters(void);
+ 	void setBounds(const void *bounds, size_t size);
+ 	void logSelector(UInt32 type, uint32_t selector);
+ 	IOBufferMemoryDescriptor *fShmem;
++	OSDictionary *fParams;  /* HIDParameters: IOHIDFamily's defaults, then whatever userland sets */
+ private:
+ 	uint64_t fSeen[4][2];   /* per connect type 0,1,(2),3: selectors 0..127 logged */
+ };
+@@ -118,6 +124,7 @@
+ 		return false;
+ 	}
+ 	initShmem();
++	publishParameters();
+ 	setProperty("IOUserClientClass", "IOHIDUserClient");
+ 	registerService();
+ 	IOLog("SWEET HIDSYS: IOHIDSystem stand-in published (EvGlobals v%d, %d bytes)\n", SWEET_SHMEM_VERSION, SWEET_EVG_SIZE);
+@@ -148,6 +155,75 @@
+ 	*(int32_t *)(void *)(g + SWEET_EVG_LLELAST) = 0;
+ 	*(int32_t *)(void *)(g + SWEET_EVG_LLEHEAD) = 1;
+ 	*(int32_t *)(void *)(g + SWEET_EVG_LLETAIL) = 1;
++}
++
++/*
++ * Patch 1217: "HIDParameters" with IOHIDSystem::createParameters' defaults (IOHIDFamily ev_private.h /
++ * IOHIDSystem.cpp). IOKit's IOHIDCopyCFTypeParameter reads this dictionary (or a property of the same name)
++ * first and only asks the IOHIDEventSystem server when the key is missing. WindowServer hosts that server
++ * itself and asked it from its main thread while creating loginwindow's session (NXClickTime in
++ * CGSMouseStateCreate): it waited for itself forever (2026-11-12).
++ */
++static void
++sweet_param_num(OSDictionary *d, const char *key, unsigned long long v, int bits)
++{
++	OSNumber *n = OSNumber::withNumber(v, bits);
++	if (n != NULL) {
++		d->setObject(key, n);
++		n->release();
++	}
++}
++
++void
++IOHIDSystem::publishParameters(void)
++{
++	fParams = OSDictionary::withCapacity(24);
++	if (fParams == NULL) {
++		return;
++	}
++	fParams->setObject("HIDDefaultParameters", kOSBooleanTrue);
++	sweet_param_num(fParams, "HIDClickTime", 500000000ULL, 64);             /* EV_DCLICKTIME, ns */
++	OSArray *space = OSArray::withCapacity(2);
++	if (space != NULL) {
++		for (int i = 0; i < 2; i++) {
++			OSNumber *n = OSNumber::withNumber(3ULL, 32);           /* EV_DCLICKSPACE, pixels */
++			if (n != NULL) {
++				space->setObject(n);
++				n->release();
++			}
++		}
++		fParams->setObject("HIDClickSpace", space);
++		space->release();
++	}
++	sweet_param_num(fParams, "HIDKeyRepeat", 83333333ULL, 64);              /* EV_DEFAULTKEYREPEAT, ns */
++	sweet_param_num(fParams, "HIDInitialKeyRepeat", 500000000ULL, 64);      /* EV_DEFAULTINITIALREPEAT, ns */
++	sweet_param_num(fParams, "HIDPointerAcceleration", 0x8000, 32);         /* EV_DEFAULTPOINTERACCELLEVEL */
++	sweet_param_num(fParams, "HIDMouseAcceleration", 0x8000, 32);
++	sweet_param_num(fParams, "HIDTrackpadAcceleration", 0x8000, 32);
++	sweet_param_num(fParams, "HIDScrollAcceleration", 0x5000, 32);          /* EV_DEFAULTSCROLLACCELLEVEL */
++	sweet_param_num(fParams, "HIDMouseScrollAcceleration", 0x5000, 32);
++	sweet_param_num(fParams, "HIDTrackpadScrollAcceleration", 0x5000, 32);
++	sweet_param_num(fParams, "HIDPointerButtonMode", 2, 32);                /* kIOHIDButtonMode_EnableRightClick */
++	sweet_param_num(fParams, "HIDF12EjectDelay", 250, 32);
++	sweet_param_num(fParams, "HIDKeyboardEjectDelay", 250, 32);
++	sweet_param_num(fParams, "HIDSlowKeysDelay", 0, 32);
++	sweet_param_num(fParams, "HIDStickyKeysDisabled", 0, 32);
++	sweet_param_num(fParams, "HIDStickyKeysOn", 0, 32);
++	sweet_param_num(fParams, "HIDStickyKeysShiftToggles", 0, 32);
++	sweet_param_num(fParams, "HIDMouseKeysOptionToggles", 0, 32);
++	sweet_param_num(fParams, "HIDFKeyMode", 0, 32);
++	sweet_param_num(fParams, "HIDWaitCursorFrameInterval", 16666667ULL, 32);
++	sweet_param_num(fParams, "HIDAutoDimThreshold", 300000000000ULL, 64);
++	sweet_param_num(fParams, "HIDIdleTime", 0, 64);
++	setProperty("HIDParameters", fParams);
++	OSCollectionIterator *it = OSCollectionIterator::withCollection(fParams);
++	if (it != NULL) {
++		OSSymbol *k;
++		while ((k = OSDynamicCast(OSSymbol, it->getNextObject())) != NULL) {
++			setProperty(k, fParams->getObject(k));
++		}
++		it->release();
++	}
+ }
+ 
+ void
+@@ -171,8 +247,18 @@
+ IOReturn
+ IOHIDSystem::setProperties(OSObject *properties)
+ {
+-	(void)properties;
+-	return kIOReturnSuccess;        /* HID parameters (acceleration, key repeat, ...) are accepted and ignored */
++	/* HID parameters (acceleration, key repeat, ...): kept so that they read back, otherwise ignored */
++	OSDictionary *d = OSDynamicCast(OSDictionary, properties);
++	if (d != NULL && fParams != NULL) {
++		OSDictionary *copy = OSDictionary::withDictionary(fParams, fParams->getCount() + d->getCount());
++		if (copy != NULL) {
++			copy->merge(d);
++			OSSafeReleaseNULL(fParams);
++			fParams = copy;
++			setProperty("HIDParameters", fParams);
++		}
++	}
++	return kIOReturnSuccess;
+ }
+ 
+ IOReturn
