@@ -2,7 +2,38 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 ~19:00: macOS 27.2 LOGIN UI (SecurityAgent) ON THE PANEL, landscape <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 ~20:30: macOS 27.2 BOOTS FULLY TO THE DESKTOP (Finder + Dock, logged in) <<<
+* Screenshot: docs/milestones/2026-11-12-macos27-desktop.png. User `mac` (501) auto-logs in; Finder draws the desktop
+  (the "iOSRoot" volume icon, top-right) and Dock runs (Trash, bottom-right), landscape, on the phone panel. Wallpaper
+  and menu bar are black (compositor doesn't fill visual-effect/material layers; no desktop picture set) - cosmetic.
+* THE LAST TWO BLOCKERS and their fixes:
+  1. opendirectoryd CRASHES (SIGTRAP/brk in CoreFoundation, bt via __CFPrefSetInvalidPropertyListDeletionEnabled)
+     during SALTED-SHA512-PBKDF2 password verification -> `dscl -authonly` = eServerError, so no password auth works
+     (and the crash loop wedges SSH logins = ios-hung). WORKAROUND (test device): drop `builtin:authenticate,privileged`
+     from the `system.login.console` right in /System/Library/Security/authorization.plist and delete /var/db/auth.db*
+     so authd rebuilds -> auto-login proceeds without the password verify (orig saved /var/tmp/authorization.plist.orig).
+     TODO (real fix): symbolicate/patch the opendirectoryd PBKDF2 crash so password auth actually works.
+  2. The builder moved ALL LaunchAgents to LaunchAgents.sweet-off, so the Aqua user session had no Dock/Finder. Copy the
+     Aqua agents back into /System/Library/LaunchAgents BEFORE the session starts (the GUI domain auto-loads them at
+     session create; `launchctl bootstrap gui/501` is rejected "domain does not support"): com.apple.Dock, Finder,
+     controlcenter, WindowManager, coreservices.uiagent, UserEventAgent-Aqua, cfprefsd.xpc.agent, distnoted.xpc.agent,
+     coreservices.useractivityd (+ Spotlight, wallpaper.agent). Then re-login.
+* FULL RECIPE to reach the desktop from a clean boot (all now done in-place on the phone root; builder parity TODO):
+  - kernel 1218, landscape ADT (equuleus-mac27-land-1.img); pmset sleep 0 (idle sleep panics the SoC).
+  - patched authd (no anchor-apple on its login agent) + edited authorization.plist (no builtin:authenticate) + no auth.db.
+  - user `mac` 501 admin; /etc/kcpassword (XOR key 7D 89 52 23 D2 BC DD EA A3 B9 1F, pw "mac") + autoLoginUser=mac;
+    .AppleSetupDone; AppleLanguages en-US.
+  - delete /var/run/*.didRunThisBoot (persist on HFS /var/run -> logind thinks every boot is a restart; MUST clear each
+    boot - needs a RunAtLoad LaunchDaemon for reboot-persistence).
+  - daemons (boot cache /System/Library/xpc/launchd.plist): the 13 core + WindowServer, loginwindow, logind,
+    runningboardd, tccd.system, coreservices.appleevents, security.syspolicy, bluetoothd, launchservicesd, coreservicesd,
+    lsd, storagekitd, security.agent.login, security.authhost. Aqua GUI agents in /System/Library/LaunchAgents.
+  - start order when doing it by hand: `sweet-gui`, then `rm /var/run/*.didRunThisBoot`, `kickstart logind`.
+* NEXT: (a) make a clean reboot reach the desktop unattended (boot-marker cleanup daemon + builder parity); (b) INPUT
+  (digitizer displayUUID=IOMFBUUID for trackpad-on-display); (c) fix opendirectoryd auth; (d) render wallpaper/material
+  backdrops; (e) true landscape rotate in the fb driver.
+
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 ~19:00: macOS 27.2 LOGIN UI (SecurityAgent) ON THE PANEL, landscape (history) <<<
 * Screenshot: /Volumes/DEEZNUTS/mi8pro-remote/shots/login-authd-1.png. loginwindow reaches LoginwindowUIShown,
   SecurityAgent launches and draws an on-screen 410x368 auth window (OK button renders; blur-material backdrops
   are still black = the compositor doesn't fill visual-effect layers). Cannot interact yet: no input path.
