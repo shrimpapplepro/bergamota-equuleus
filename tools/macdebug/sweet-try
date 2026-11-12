@@ -1,0 +1,17 @@
+#!/bin/sh
+# sweet-try LABEL [SECONDS]: start a staged launch daemon (/System/Library/LaunchDaemons.sweet-off/LABEL.plist)
+# and boot it out again after SECONDS (default 45) unless /var/tmp/sweet-keep.LABEL exists by then.
+# A daemon that crash-loops (opendirectoryd did) blocks every user lookup, SSH logins included; this undoes it.
+# Each run writes a token; an older run's timer finds a different token and leaves the job alone.
+L=${1:?label}; T=${2:-45}
+P=/System/Library/LaunchDaemons.sweet-off/$L.plist
+[ -f "$P" ] || { echo "no $P"; exit 1; }
+rm -f /var/tmp/sweet-keep.$L
+TOK=$$.$(date +%s); echo $TOK > /var/tmp/sweet-try.$L
+launchctl bootout system/$L 2>/dev/null
+launchctl bootstrap system "$P"; echo "bootstrap rc=$?"
+( sleep "$T"; [ "$(cat /var/tmp/sweet-try.$L 2>/dev/null)" = "$TOK" ] || exit 0
+  [ -e /var/tmp/sweet-keep.$L ] || { launchctl bootout system/$L 2>/dev/null; echo "$(date) sweet-try: booted out $L" > /dev/console; } ) </dev/null >/dev/null 2>&1 &
+sleep 4
+launchctl print system/$L 2>/dev/null | grep -E '^\s+(state|pid|runs|last exit code|last terminating signal) ' | head -6
+echo "auto bootout in ${T}s unless: touch /var/tmp/sweet-keep.$L"
