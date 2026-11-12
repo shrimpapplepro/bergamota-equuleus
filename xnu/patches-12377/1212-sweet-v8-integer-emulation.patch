@@ -1,0 +1,558 @@
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -40,6 +40,7 @@
+ #include <arm64/instructions.h>
+ #include <arm64/sweet_fjcvtzs.h>
+ #include <arm64/sweet_pacemu.h>
++#include <arm64/sweet_v8emu.h>
+ 
+ #include <kern/debug.h>
+ #include <kern/exc_guard.h>
+@@ -1314,6 +1315,130 @@
+ 		task_t task = current_task();
+ 		void *bsd_info = get_bsdtask_info(task);
+ 		printf("SWEET: emulating %s 0x%08x at pc=0x%llx in %s[%d] (%llu so far)\n", sweet_pac_class_name(in.cls),
++		    instr, (unsigned long long)pc, bsd_info ? proc_name_address(bsd_info) : "?", task_pid(task),
++		    (unsigned long long)n);
++	}
++	return true;
++}
++
++/*
++ * SWEET (patch 1212): emulate the ARMv8.3-8.6 integer instructions that macOS 27's userland
++ * uses unconditionally and SDM845's Kryo 385 lacks (osfmk/arm64/sweet_v8emu.h: LRCPC2
++ * LDAPUR/STLUR, DotProd SDOT/UDOT, FlagM, SB, SHA3). LDAPUR/STLUR keep their ordering with
++ * a barrier after the load / before the store, and aligned 4/8-byte accesses stay single-copy
++ * atomic (copyin/copyout_atomic). A fault raises the SIGSEGV the instruction would have.
++ */
++static int
++sweet_v8_load(void *ctx __unused, uint64_t addr, unsigned size, uint64_t *val)
++{
++	const user_addr_t ua = (user_addr_t)VM_USER_STRIP_TBI(addr);
++	int err;
++
++	*val = 0;
++	if (size == 8 && (ua & 7) == 0) {
++		err = copyin_atomic64(ua, val);
++	} else if (size == 4 && (ua & 3) == 0) {
++		uint32_t w = 0;
++		err = copyin_atomic32(ua, &w);
++		*val = w;
++	} else {
++		err = copyin(ua, (char *)val, size);
++	}
++	__asm__ volatile ("dmb ish" ::: "memory");      /* acquire: later accesses stay after this load */
++	return err;
++}
++
++static int
++sweet_v8_store(void *ctx __unused, uint64_t addr, unsigned size, uint64_t val)
++{
++	const user_addr_t ua = (user_addr_t)VM_USER_STRIP_TBI(addr);
++
++	__asm__ volatile ("dmb ish" ::: "memory");      /* release: earlier accesses complete first */
++	if (size == 8 && (ua & 7) == 0) {
++		return copyout_atomic64(val, ua);
++	}
++	if (size == 4 && (ua & 3) == 0) {
++		return copyout_atomic32((uint32_t)val, ua);
++	}
++	return copyout((const void *)&val, ua, size);   /* little-endian: the low bytes */
++}
++
++static bool
++sweet_emulate_v8(arm_saved_state_t *state, uint32_t instr)
++{
++	static uint32_t sweet_v8_logged[SWEET_V8C_COUNT];
++	static uint64_t sweet_v8_count[SWEET_V8C_COUNT];        /* statistics: racy on purpose */
++	const unsigned cls = sweet_v8_classify(instr);
++	thread_t thread = current_thread();
++	arm_neon_saved_state64_t *ns64 = NULL;
++	struct sweet_v8_cpu cpu;
++	uint64_t fault_addr = 0;
++
++	if (cls == SWEET_V8C_NONE) {
++		return false;
++	}
++	cpu.written_x = 0;
++	cpu.written_v = 0;
++	cpu.written_nzcv = false;
++	if (sweet_v8_class_uses_neon(cls)) {
++		arm_neon_saved_state_t *ns = thread->machine.uNeon;
++		if (ns == NULL || !is_neon_saved_state64(ns)) {
++			return false;
++		}
++		ns64 = neon_state64(ns);
++		for (unsigned r = 0; r < 32; r++) {
++			cpu.v[r][0] = (uint64_t)ns64->v.q[r];
++			cpu.v[r][1] = (uint64_t)(ns64->v.q[r] >> 64);
++		}
++	}
++	for (unsigned i = 0; i < 29; i++) {
++		cpu.x[i] = (uint64_t)get_saved_state_reg(state, i);
++	}
++	cpu.x[29] = (uint64_t)get_saved_state_fp(state);
++	cpu.x[30] = (uint64_t)get_saved_state_lr(state);
++	cpu.sp = (uint64_t)get_saved_state_sp(state);
++	cpu.nzcv = get_saved_state_cpsr(state) & SWEET_V8_NZCV;
++	const uint64_t pc = (uint64_t)get_saved_state_pc(state);
++
++	thread->machine.recover_esr = 0;
++	thread->machine.recover_far = 0;
++	switch (sweet_v8_execute(instr, cls, &cpu, sweet_v8_load, sweet_v8_store, NULL, &fault_addr)) {
++	case SWEET_V8_DONE:
++		break;
++	case SWEET_V8_FAULT:
++		sweet_pac_fault(state, fault_addr);
++	default:
++		return false;
++	}
++
++	for (uint32_t m = cpu.written_x; m != 0; m &= m - 1) {
++		const unsigned r = (unsigned)__builtin_ctz(m);
++		if (r < 29) {
++			set_saved_state_reg(state, r, (register_t)cpu.x[r]);
++		} else if (r == 29) {
++			set_saved_state_fp(state, (register_t)cpu.x[29]);
++		} else if (r == 30) {
++			set_user_saved_state_lr(state, (register_t)cpu.x[30]);
++		}
++	}
++	if (ns64 != NULL) {
++		for (uint32_t m = cpu.written_v; m != 0; m &= m - 1) {
++			const unsigned r = (unsigned)__builtin_ctz(m);
++			ns64->v.q[r] = ((__uint128_t)cpu.v[r][1] << 64) | cpu.v[r][0];
++		}
++	}
++	if (cpu.written_nzcv) {
++		set_saved_state_cpsr(state, (get_saved_state_cpsr(state) & ~SWEET_V8_NZCV) | (cpu.nzcv & SWEET_V8_NZCV));
++	}
++	set_saved_state_pc(state, (register_t)(pc + 4));
++
++	/* the first four of each class, then every power of two from 1024 on, with the process */
++	const uint64_t n = ++sweet_v8_count[cls];
++	if ((sweet_v8_logged[cls] < 4 && os_atomic_inc_orig(&sweet_v8_logged[cls], relaxed) < 4) ||
++	    (n >= 1024 && (n & (n - 1)) == 0)) {
++		task_t task = current_task();
++		void *bsd_info = get_bsdtask_info(task);
++		printf("SWEET: emulating %s 0x%08x at pc=0x%llx in %s[%d] (%llu so far)\n", sweet_v8_class_name(cls),
+ 		    instr, (unsigned long long)pc, bsd_info ? proc_name_address(bsd_info) : "?", task_pid(task),
+ 		    (unsigned long long)n);
+ 	}
+@@ -1415,6 +1540,15 @@
+ 	}
+ 
+ 	/*
++	 * sweetarm64e=1 (patch 1212): an ARMv8.3-8.6 integer instruction this CPU lacks
++	 * (LRCPC2, DotProd, FlagM, SB, SHA3; macOS 27 userland): emulate it.
++	 */
++	if (PSR64_IS_USER64(get_saved_state_cpsr(state)) && sweet_arm64e_enabled() &&
++	    sweet_emulate_v8(state, instr)) {
++		return;
++	}
++
++	/*
+ 	 * Check for GDB breakpoint via illegal opcode.
+ 	 */
+ 	if (IS_ARM_GDB_TRAP(instr)) {
+diff --git a/bsd/kern/syscalls.master b/bsd/kern/syscalls.master
+--- a/bsd/kern/syscalls.master
++++ b/bsd/kern/syscalls.master
+@@ -437,10 +437,11 @@
+ 290	AUE_GETWGROUPS	ALL	{ int getwgroups(user_addr_t setlen, user_addr_t guidset) NO_SYSCALL_STUB; }
+ 291	AUE_MKFIFO_EXTENDED	ALL	{ int mkfifo_extended(user_addr_t path, uid_t uid, gid_t gid, int mode, user_addr_t xsecurity) NO_SYSCALL_STUB; }
+ 292	AUE_MKDIR_EXTENDED	ALL	{ int mkdir_extended(user_addr_t path, uid_t uid, gid_t gid, int mode, user_addr_t xsecurity) NO_SYSCALL_STUB; }
++; sweet 1212: without CONFIG_EXT_RESOLVER, identitysvc (macOS opendirectoryd registers with it) returns ENOSYS, not SIGSYS
+ #if CONFIG_EXT_RESOLVER
+ 293	AUE_IDENTITYSVC	ALL	{ int identitysvc(int opcode, user_addr_t message) NO_SYSCALL_STUB; }
+ #else
+-293	AUE_NULL	ALL	{ int nosys(void); }
++293	AUE_NULL	ALL	{ int enosys(void); }
+ #endif
+ 294	AUE_NULL	ALL	{ int shared_region_check_np(uint64_t *start_address) NO_SYSCALL_STUB; }
+ 295	AUE_NULL	ALL	{ int nosys(void); } { old shared_region_map_np }
+diff --git a/osfmk/arm64/sweet_v8emu.h b/osfmk/arm64/sweet_v8emu.h
+new file mode 100644
+--- /dev/null
++++ b/osfmk/arm64/sweet_v8emu.h
+@@ -0,0 +1,379 @@
++/*
++ * SWEET (SDM845 Kryo 385 = ARMv8.2 + RCpc + FP16 + RDM): software versions of the
++ * ARMv8.3-8.6 integer instructions that macOS 27's userland uses unconditionally
++ * (its code is built for Apple's M1-class baseline). The CPU raises an undefined
++ * instruction exception for each; sleh.c (handle_uncategorized) calls
++ * sweet_v8_execute() for 64-bit EL0 threads when boot-arg sweetarm64e=1 is set.
++ *
++ *   LRCPC2   LDAPUR{,B,H,SB,SH,SW} / STLUR{,B,H}  load-acquire / store-release with
++ *            a 9-bit signed offset (the cache has ~128k of them, Swift and C++ atomics)
++ *   DotProd  SDOT / UDOT, vector and by element (opendirectoryd, Accelerate)
++ *   FlagM    CFINV, RMIF, SETF8, SETF16; FlagM2 AXFLAG, XAFLAG
++ *   SB       speculation barrier (the trap and the exception return are context
++ *            synchronizing, which is all SB has to guarantee here)
++ *   SHA3     EOR3, BCAX, RAX1, XAR
++ *
++ * Not here (floating point, kernel code cannot touch the FPU freely): FHM
++ * (FMLAL/FMLSL), FCMA (FCMLA/FCADD), BF16. JSCVT is sweet_fjcvtzs.h, PAuth is
++ * sweet_pacemu.h.
++ *
++ * Plain C with no kernel dependency: tools/v8emu/ runs it against the real
++ * instructions on an Apple Silicon Mac (differential test). Memory goes through a
++ * callback so the kernel can use copyin/copyout and report faults.
++ */
++#ifndef _ARM64_SWEET_V8EMU_H_
++#define _ARM64_SWEET_V8EMU_H_
++
++#include <stdint.h>
++#include <stdbool.h>
++
++/* PSTATE flag bits (as PSR64_N/Z/C/V) */
++#define SWEET_V8_N      (1u << 31)
++#define SWEET_V8_Z      (1u << 30)
++#define SWEET_V8_C      (1u << 29)
++#define SWEET_V8_V      (1u << 28)
++#define SWEET_V8_NZCV   (SWEET_V8_N | SWEET_V8_Z | SWEET_V8_C | SWEET_V8_V)
++
++enum sweet_v8_class {
++	SWEET_V8C_NONE = 0,
++	SWEET_V8C_LRCPC2,
++	SWEET_V8C_DOTPROD,
++	SWEET_V8C_FLAGM,
++	SWEET_V8C_SB,
++	SWEET_V8C_SHA3,
++	SWEET_V8C_COUNT
++};
++
++static inline const char *
++sweet_v8_class_name(unsigned cls)
++{
++	static const char *const names[SWEET_V8C_COUNT] = {"?", "LRCPC2", "DotProd", "FlagM", "SB", "SHA3"};
++	return cls < SWEET_V8C_COUNT ? names[cls] : "?";
++}
++
++struct sweet_v8_cpu {
++	uint64_t x[31];          /* x0..x30 */
++	uint64_t sp;
++	uint32_t nzcv;           /* PSTATE bits 31..28 */
++	uint64_t v[32][2];       /* NEON registers: [0] = low 64 bits, [1] = high 64 bits */
++	uint32_t written_x;      /* bit r: x[r] changed (bit 31: sp) */
++	uint32_t written_v;      /* bit r: v[r] changed */
++	bool written_nzcv;
++	bool uses_neon;          /* set by sweet_v8_classify: the instruction reads/writes v[] */
++};
++
++/*
++ * Memory access for LRCPC2: size 1, 2, 4 or 8 bytes at addr, little-endian in *val.
++ * acquire: a load-acquire (barrier after); release: a store-release (barrier before).
++ * Returns 0, or nonzero when addr could not be accessed (the caller raises SIGSEGV).
++ */
++typedef int (*sweet_v8_load_fn)(void *ctx, uint64_t addr, unsigned size, uint64_t *val);
++typedef int (*sweet_v8_store_fn)(void *ctx, uint64_t addr, unsigned size, uint64_t val);
++
++enum { SWEET_V8_NOT_MINE = 0, SWEET_V8_DONE, SWEET_V8_FAULT };
++
++/* ---- decode ------------------------------------------------------------------------------- */
++
++static inline bool
++sweet_v8_is_lrcpc2(uint32_t i)
++{
++	if ((i & 0x3F200C00u) != 0x19000000u) {
++		return false;
++	}
++	const uint32_t size = i >> 30, opc = (i >> 22) & 3;
++	if (opc == 2 && size == 3) {
++		return false;           /* unallocated */
++	}
++	if (opc == 3 && size >= 2) {
++		return false;           /* unallocated */
++	}
++	return true;
++}
++
++static inline bool
++sweet_v8_is_dot_vec(uint32_t i)
++{
++	return (i & 0x9FE0FC00u) == 0x0E809400u;        /* SDOT/UDOT Vd.{2,4}S, Vn.{8,16}B, Vm.{8,16}B */
++}
++
++static inline bool
++sweet_v8_is_dot_elem(uint32_t i)
++{
++	return (i & 0x9FC0F400u) == 0x0F80E000u;        /* SDOT/UDOT Vd.{2,4}S, Vn.{8,16}B, Vm.4B[idx] */
++}
++
++#define SWEET_V8_CFINV  0xD500401Fu
++#define SWEET_V8_XAFLAG 0xD500403Fu
++#define SWEET_V8_AXFLAG 0xD500405Fu
++#define SWEET_V8_SB     0xD50330FFu
++
++static inline bool
++sweet_v8_is_rmif(uint32_t i)
++{
++	return (i & 0xFFE07C10u) == 0xBA000400u;
++}
++
++static inline bool
++sweet_v8_is_setf(uint32_t i)
++{
++	return (i & 0xFFFFBC1Fu) == 0x3A00080Du;
++}
++
++static inline bool
++sweet_v8_is_eor3(uint32_t i)
++{
++	return (i & 0xFFE08000u) == 0xCE000000u;
++}
++
++static inline bool
++sweet_v8_is_bcax(uint32_t i)
++{
++	return (i & 0xFFE08000u) == 0xCE200000u;
++}
++
++static inline bool
++sweet_v8_is_rax1(uint32_t i)
++{
++	return (i & 0xFFE0FC00u) == 0xCE608C00u;
++}
++
++static inline bool
++sweet_v8_is_xar(uint32_t i)
++{
++	return (i & 0xFFE00000u) == 0xCE800000u;
++}
++
++static inline unsigned
++sweet_v8_classify(uint32_t i)
++{
++	if (sweet_v8_is_lrcpc2(i)) {
++		return SWEET_V8C_LRCPC2;
++	}
++	if (sweet_v8_is_dot_vec(i) || sweet_v8_is_dot_elem(i)) {
++		return SWEET_V8C_DOTPROD;
++	}
++	if (i == SWEET_V8_CFINV || i == SWEET_V8_XAFLAG || i == SWEET_V8_AXFLAG || sweet_v8_is_rmif(i) ||
++	    sweet_v8_is_setf(i)) {
++		return SWEET_V8C_FLAGM;
++	}
++	if (i == SWEET_V8_SB) {
++		return SWEET_V8C_SB;
++	}
++	if (sweet_v8_is_eor3(i) || sweet_v8_is_bcax(i) || sweet_v8_is_rax1(i) || sweet_v8_is_xar(i)) {
++		return SWEET_V8C_SHA3;
++	}
++	return SWEET_V8C_NONE;
++}
++
++static inline bool
++sweet_v8_class_uses_neon(unsigned cls)
++{
++	return cls == SWEET_V8C_DOTPROD || cls == SWEET_V8C_SHA3;
++}
++
++/* ---- helpers ------------------------------------------------------------------------------ */
++
++static inline uint64_t
++sweet_v8_rol64(uint64_t v, unsigned n)
++{
++	n &= 63;
++	return n ? (v << n) | (v >> (64 - n)) : v;
++}
++
++static inline uint64_t
++sweet_v8_ror64(uint64_t v, unsigned n)
++{
++	n &= 63;
++	return n ? (v >> n) | (v << (64 - n)) : v;
++}
++
++static inline uint8_t
++sweet_v8_vbyte(const struct sweet_v8_cpu *c, unsigned r, unsigned b)
++{
++	return (uint8_t)(c->v[r][b >> 3] >> ((b & 7) * 8));
++}
++
++static inline uint32_t
++sweet_v8_vword(const struct sweet_v8_cpu *c, unsigned r, unsigned w)
++{
++	return (uint32_t)(c->v[r][w >> 1] >> ((w & 1) * 32));
++}
++
++static inline uint64_t
++sweet_v8_xreg(const struct sweet_v8_cpu *c, unsigned r)
++{
++	return r == 31 ? 0 : c->x[r];               /* register 31 = XZR */
++}
++
++static inline void
++sweet_v8_set_x(struct sweet_v8_cpu *c, unsigned r, uint64_t v)
++{
++	if (r != 31) {
++		c->x[r] = v;
++		c->written_x |= 1u << r;
++	}
++}
++
++static inline void
++sweet_v8_set_flags(struct sweet_v8_cpu *c, uint32_t nzcv)
++{
++	c->nzcv = nzcv & SWEET_V8_NZCV;
++	c->written_nzcv = true;
++}
++
++/* ---- execute ------------------------------------------------------------------------------ */
++
++static inline int
++sweet_v8_exec_lrcpc2(uint32_t i, struct sweet_v8_cpu *c, sweet_v8_load_fn load, sweet_v8_store_fn store,
++    void *ctx, uint64_t *fault_addr)
++{
++	const uint32_t size = i >> 30, opc = (i >> 22) & 3;
++	const unsigned rn = (i >> 5) & 31, rt = i & 31;
++	int64_t imm = (int64_t)((i >> 12) & 0x1FF);
++	if (imm & 0x100) {
++		imm -= 0x200;
++	}
++	const uint64_t base = rn == 31 ? c->sp : c->x[rn];
++	const uint64_t addr = base + (uint64_t)imm;
++	const unsigned nbytes = 1u << size;
++
++	if (opc == 0) {
++		/* STLUR{B,H,,}: release store of the low nbytes of Wt/Xt */
++		if (store(ctx, addr, nbytes, sweet_v8_xreg(c, rt)) != 0) {
++			*fault_addr = addr;
++			return SWEET_V8_FAULT;
++		}
++		return SWEET_V8_DONE;
++	}
++
++	uint64_t val = 0;
++	if (load(ctx, addr, nbytes, &val) != 0) {
++		*fault_addr = addr;
++		return SWEET_V8_FAULT;
++	}
++	if (nbytes < 8) {
++		val &= (1ull << (nbytes * 8)) - 1;
++	}
++	if (opc == 2 || opc == 3) {
++		/* LDAPURS{B,H,W}: sign-extend to 64 bits (opc 2) or to 32 bits (opc 3) */
++		const unsigned bits = nbytes * 8;
++		const uint64_t sign = 1ull << (bits - 1);
++		val = (val ^ sign) - sign;
++		if (opc == 3) {
++			val &= 0xFFFFFFFFull;
++		}
++	}
++	sweet_v8_set_x(c, rt, val);
++	return SWEET_V8_DONE;
++}
++
++static inline void
++sweet_v8_exec_dot(uint32_t i, struct sweet_v8_cpu *c)
++{
++	const bool q = (i >> 30) & 1, u = (i >> 29) & 1;
++	const unsigned rd = i & 31, rn = (i >> 5) & 31;
++	const bool elem = sweet_v8_is_dot_elem(i);
++	const unsigned rm = (i >> 16) & 31;              /* by element: M:Rm, all 32 registers for .4B[idx] */
++	const unsigned index = elem ? ((((i >> 11) & 1) << 1) | ((i >> 21) & 1)) : 0;
++	const unsigned lanes = q ? 4 : 2;
++	uint32_t out[4] = {0, 0, 0, 0};
++
++	for (unsigned e = 0; e < lanes; e++) {
++		uint32_t acc = sweet_v8_vword(c, rd, e);
++		for (unsigned k = 0; k < 4; k++) {
++			const uint8_t nb = sweet_v8_vbyte(c, rn, 4 * e + k);
++			const uint8_t mb = sweet_v8_vbyte(c, rm, elem ? 4 * index + k : 4 * e + k);
++			const int32_t a = u ? (int32_t)nb : (int32_t)(int8_t)nb;
++			const int32_t b = u ? (int32_t)mb : (int32_t)(int8_t)mb;
++			acc += (uint32_t)(a * b);
++		}
++		out[e] = acc;
++	}
++	c->v[rd][0] = (uint64_t)out[0] | ((uint64_t)out[1] << 32);
++	c->v[rd][1] = q ? ((uint64_t)out[2] | ((uint64_t)out[3] << 32)) : 0;
++	c->written_v |= 1u << rd;
++}
++
++static inline void
++sweet_v8_exec_flagm(uint32_t i, struct sweet_v8_cpu *c)
++{
++	const uint32_t f = c->nzcv;
++	const bool z = f & SWEET_V8_Z, cf = f & SWEET_V8_C, v = f & SWEET_V8_V;
++
++	if (i == SWEET_V8_CFINV) {
++		sweet_v8_set_flags(c, f ^ SWEET_V8_C);
++	} else if (i == SWEET_V8_AXFLAG) {
++		/* N = 0, Z = Z | V, C = C & !V, V = 0 */
++		sweet_v8_set_flags(c, ((z || v) ? SWEET_V8_Z : 0) | ((cf && !v) ? SWEET_V8_C : 0));
++	} else if (i == SWEET_V8_XAFLAG) {
++		/* N = !C & !Z, Z = Z & C, C = C | Z, V = !C & Z */
++		sweet_v8_set_flags(c, ((!cf && !z) ? SWEET_V8_N : 0) | ((z && cf) ? SWEET_V8_Z : 0) |
++		    ((cf || z) ? SWEET_V8_C : 0) | ((!cf && z) ? SWEET_V8_V : 0));
++	} else if (sweet_v8_is_rmif(i)) {
++		/* RMIF Xn, #shift, #mask: NZCV bits selected by mask from ROR(Xn, shift)[3:0] */
++		const unsigned rn = (i >> 5) & 31, shift = (i >> 15) & 63, mask = i & 15;
++		const uint32_t tmp = (uint32_t)(sweet_v8_ror64(sweet_v8_xreg(c, rn), shift) & 15) << 28;
++		const uint32_t m = (uint32_t)mask << 28;
++		sweet_v8_set_flags(c, (f & ~m) | (tmp & m));
++	} else {
++		/* SETF8/SETF16 Wn: N = Wn[msb], Z = Wn[msb:0] == 0, V = Wn[msb + 1] ^ Wn[msb], C kept */
++		const unsigned rn = (i >> 5) & 31, msb = ((i >> 14) & 1) ? 15 : 7;
++		const uint32_t w = (uint32_t)sweet_v8_xreg(c, rn);
++		const bool nb = (w >> msb) & 1;
++		const bool zb = (w & ((2u << msb) - 1)) == 0;
++		const bool vb = ((w >> (msb + 1)) & 1) ^ nb;
++		sweet_v8_set_flags(c, (nb ? SWEET_V8_N : 0) | (zb ? SWEET_V8_Z : 0) | (f & SWEET_V8_C) | (vb ? SWEET_V8_V : 0));
++	}
++}
++
++static inline void
++sweet_v8_exec_sha3(uint32_t i, struct sweet_v8_cpu *c)
++{
++	const unsigned rd = i & 31, rn = (i >> 5) & 31, rm = (i >> 16) & 31, ra = (i >> 10) & 31;
++	uint64_t r[2];
++
++	for (unsigned k = 0; k < 2; k++) {
++		const uint64_t n = c->v[rn][k], m = c->v[rm][k];
++		if (sweet_v8_is_eor3(i)) {
++			r[k] = n ^ m ^ c->v[ra][k];
++		} else if (sweet_v8_is_bcax(i)) {
++			r[k] = n ^ (m & ~c->v[ra][k]);
++		} else if (sweet_v8_is_rax1(i)) {
++			r[k] = n ^ sweet_v8_rol64(m, 1);
++		} else {
++			r[k] = sweet_v8_ror64(n ^ m, (i >> 10) & 63);       /* XAR */
++		}
++	}
++	c->v[rd][0] = r[0];
++	c->v[rd][1] = r[1];
++	c->written_v |= 1u << rd;
++}
++
++/*
++ * Execute instruction i (already classified as cls != NONE) on c. The caller moves the PC
++ * on SWEET_V8_DONE; SWEET_V8_FAULT leaves everything unchanged and *fault_addr set.
++ */
++static inline int
++sweet_v8_execute(uint32_t i, unsigned cls, struct sweet_v8_cpu *c, sweet_v8_load_fn load, sweet_v8_store_fn store,
++    void *ctx, uint64_t *fault_addr)
++{
++	switch (cls) {
++	case SWEET_V8C_LRCPC2:
++		return sweet_v8_exec_lrcpc2(i, c, load, store, ctx, fault_addr);
++	case SWEET_V8C_DOTPROD:
++		sweet_v8_exec_dot(i, c);
++		return SWEET_V8_DONE;
++	case SWEET_V8C_FLAGM:
++		sweet_v8_exec_flagm(i, c);
++		return SWEET_V8_DONE;
++	case SWEET_V8C_SB:
++		return SWEET_V8_DONE;
++	case SWEET_V8C_SHA3:
++		sweet_v8_exec_sha3(i, c);
++		return SWEET_V8_DONE;
++	default:
++		return SWEET_V8_NOT_MINE;
++	}
++}
++
++#endif /* _ARM64_SWEET_V8EMU_H_ */
