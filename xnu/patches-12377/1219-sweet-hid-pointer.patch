@@ -1,0 +1,142 @@
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -412,6 +412,27 @@
+ 
+ static SweetHIDButtons *gSweetButtons;
+ static SweetHIDTouch *gSweetTouch;
++
++/*
++ * Patch 1219: a relative pointing device (trackpad/mouse). WindowServer accepts a relative pointer with no
++ * display association (unlike a digitizer, which needs a displayUUID), so this delivers cursor motion and clicks
++ * to the macOS UI. Driven by sweet_hid_pointer(dx, dy, buttons) from the touch panel (trackpad emulation) or the
++ * kern.sweet_pointer sysctl (bsd/dev/sweet_reboot.c) for testing over SSH. buttons bit0 = left.
++ */
++class SweetHIDPointer : public IOHIDEventService {
++	OSDeclareDefaultStructors(SweetHIDPointer);
++public:
++	virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++	void move(int dx, int dy, unsigned buttons);
++protected:
++	virtual UInt32 getPrimaryUsagePage() APPLE_KEXT_OVERRIDE { return kHIDPage_GenericDesktop; }
++	virtual UInt32 getPrimaryUsage() APPLE_KEXT_OVERRIDE { return kHIDUsage_GD_Mouse; }
++	virtual UInt32 getProductID() APPLE_KEXT_OVERRIDE { return 3; }
++private:
++	unsigned fButtons;
++};
++OSDefineMetaClassAndStructors(SweetHIDPointer, IOHIDEventService);
++static SweetHIDPointer *gSweetPointer;
+ 
+ bool
+ SweetHIDButtons::start(IOService *provider)
+@@ -678,5 +699,40 @@
+ {
+ 	if (gSweetTouch) {
+ 		gSweetTouch->touch(finger, down != 0, x, y);
++	}
++}
++
++bool
++SweetHIDPointer::start(IOService *provider)
++{
++	if (!IOHIDEventService::start(provider)) {
++		return false;
+ 	}
++	setProperty("HIDPointerAccelerationType", "HIDMouseAcceleration");
++	gSweetPointer = this;
++	registerService();
++	IOLog("SWEET HID: pointer (relative mouse) registered\n");
++	return true;
+ }
++
++/* Relative move by (dx, dy) device units and set the button state (bit0 = left). */
++void
++SweetHIDPointer::move(int dx, int dy, unsigned buttons)
++{
++	const unsigned old = fButtons;
++	fButtons = buttons & 0x7;
++	IOHIDEvent *event = IOHIDEvent::relativePointerEvent(mach_absolute_time(), dx, dy, 0, fButtons, old, 0);
++	if (event) {
++		dispatchEvent(event);
++		event->release();
++	}
++}
++
++/* dx, dy: relative motion in device units; buttons: bit0 left, bit1 right, bit2 middle. */
++extern "C" void
++sweet_hid_pointer(int dx, int dy, unsigned buttons)
++{
++	if (gSweetPointer) {
++		gSweetPointer->move(dx, dy, buttons);
++	}
++}
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -78,6 +78,11 @@
+     "     'IOMatchCategory' = SweetHIDTouch;"
+     "   },"
+     "   {"
++    "     'IOClass'         = SweetHIDPointer;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = SweetHIDPointer;"
++    "   },"
++    "   {"
+     "     'IOClass'         = IOHIDSystem;"
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = IOHIDSystem;"
+diff --git a/bsd/dev/sweet_reboot.c b/bsd/dev/sweet_reboot.c
+--- a/bsd/dev/sweet_reboot.c
++++ b/bsd/dev/sweet_reboot.c
+@@ -602,7 +602,51 @@
+ SYSCTL_PROC(_kern, OID_AUTO, sweet_bootwd,
+     CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sr_bootwd_sysctl, "I",
+     "Boot watchdog: seconds left (0 = off); write 0 to disarm, N to check for the TCP listener in N s");
++
++/*
++ * Patch 1219: kern.sweet_pointer = "DX DY BUTTONS" posts one relative pointer (trackpad) move/click through the
++ * SweetHIDPointer HID service (iokit/Kernel/arm/hid/SweetHID.cpp), so the cursor can be driven over SSH for testing
++ * before the touch panel is wired to it. BUTTONS bit0 = left, bit1 = right, bit2 = middle.
++ */
++extern void sweet_hid_pointer(int dx, int dy, unsigned buttons);
++
++static int
++sweet_pointer_sysctl SYSCTL_HANDLER_ARGS
++{
++#pragma unused(oidp, arg1, arg2)
++	char buf[48] = "";
++	int error = sysctl_handle_string(oidp, buf, sizeof(buf), req);
++	if (error || !req->newptr) {
++		return error;
++	}
++	int v[3] = {0, 0, 0};
++	const char *p = buf;
++	for (int i = 0; i < 3; i++) {
++		while (*p == ' ' || *p == '\t') {
++			p++;
++		}
++		int sign = 1;
++		if (*p == '-') {
++			sign = -1;
++			p++;
++		} else if (*p == '+') {
++			p++;
++		}
++		int n = 0;
++		while (*p >= '0' && *p <= '9') {
++			n = n * 10 + (*p - '0');
++			p++;
++		}
++		v[i] = sign * n;
++	}
++	sweet_hid_pointer(v[0], v[1], (unsigned)v[2]);
++	return 0;
++}
+ 
++SYSCTL_PROC(_kern, OID_AUTO, sweet_pointer,
++    CTLTYPE_STRING | CTLFLAG_WR | CTLFLAG_LOCKED, 0, 0, sweet_pointer_sysctl, "A",
++    "Post a relative pointer event: write \"DX DY BUTTONS\" (buttons bit0=left)");
++
+ /*
+  * Reset the SoC. Returns only if nothing reset it (or no reset was wanted:
+  * -1, the old behaviour). panic_restart: the call comes from a panic restart.
