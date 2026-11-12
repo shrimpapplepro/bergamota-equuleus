@@ -2,7 +2,29 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 10:50: core macOS daemons RUN (opendirectoryd, configd...); remote reboot <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 11:15: core daemons START AT BOOT; WindowServer needs IOHIDSystem <<<
+* Phone now: boot image `enxerto/out/equuleus-mac27-full-5.img` (kernel 1213, CI 43142608454; cmdline =
+  scratchpad mac27-full3.cmdline). Root on `ios_data` edited in place over SSH since the 08:28 image (NOT in
+  the image file on DEEZNUTS, the builder carries the same changes since 98e495c): launchd cache
+  (/System/Library/xpc/launchd.plist; backups .before-rebootd, .before-core, .sweet-orig) = org.sweet.{dropbear,
+  hello, rebootd} + notifyd logd syslogd configd opendirectoryd diskarbitrationd securityd trustd powerd distnoted
+  UserEventAgent-System bsd.dirhelper cfprefsd (their plists also copied to /System/Library/LaunchDaemons);
+  /System/Volumes/Preboot -> Preboot.sweet-off; /System/Cryptexes/{OS,App} -> ../..; /usr/local/bin/{sweet-rebootd,
+  sweet-try}; /usr/local/lib/exitbt.dylib.
+* Boot result: SSH ~15 s after `fastboot boot`, all 13 daemons running, `defaults write/read` OK (1213 Quarantine
+  stand-in answered cfprefsd op 87, rootless-init op 80), opendirectoryd answers id/dscl. No crashes.
+* WindowServer (`.../SkyLight.framework/Resources/WindowServer -daemon`, kickstart or by hand) exits 1:
+  exitbt.dylib (tools/macdebug, DYLD_INSERT_LIBRARIES works) -> exit from SkyLight WSInitialize+0x1df8 after
+  "Cannot open the HID and display/cursor system." (neighbours: "IOServiceOpen failed %x", "IOHIDCreateSharedMemory
+  failed %x"). The I/O Registry has no IOHIDSystem (only SweetHIDTouch, SweetHIDButtons, AppleCLCD,
+  IOMobileFramebufferUserClient, IOCoreSurfaceRoot). Its syscall trace also shows setsid/setlogin EPERM (probably
+  harmless under launchd). NEXT: a kernel IOHIDSystem stand-in (IOHIDFamily is open source: IOHIDSystem.cpp,
+  IOHIDUserClient selectors, IOHIDShared.h EvOffsets/EvGlobals for kIOHIDGlobalMemory), later fed by the touch panel
+  as a trackpad.
+* `log show` works but every message is "<compose failure [shared UUID]>": no /var/db/uuidtext/dsc for our cache.
+  OS_ACTIVITY_DT_MODE=YES prints nothing. Use exitbt / the syscall tracer instead for now.
+
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 10:50: core macOS daemons RUN (opendirectoryd, configd...); remote reboot (history) <<<
 * REMOTE REBOOT, nobody at the phone (user away 2026-11-12): `tools/equuleus/rebootd/sweet-rebootd` (TCP 5141, no
   shell / user lookups / XPC; "ping" -> pong, "sweet-reboot normal|fastboot|recovery" -> kern.sweet_reboot_mode +
   sync + reboot(2)). On the phone's root: /usr/local/bin/sweet-rebootd + job org.sweet.rebootd added to
