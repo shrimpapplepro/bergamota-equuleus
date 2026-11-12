@@ -54,12 +54,20 @@ def main():
         old, new = words.split(':')
         f, off = where(d, int(va, 16))
         edits.append((f, off, int(old, 16), int(new, 16), int(va, 16)))
+    todo = []
     for f, off, old, new, va in edits:
         with open(f, 'rb') as fh:
             fh.seek(off)
             cur = struct.unpack('<I', fh.read(4))[0]
+        if cur == new:
+            print(f'# {va:#x}: already patched', file=sys.stderr)
+            continue
         if cur != old:
             sys.exit(f'{va:#x} ({os.path.basename(f)}+{off:#x}): found {cur:#010x}, expected {old:#010x}: nothing written')
+        todo.append((f, off, old, new, va))
+    edits = todo
+    if not edits:
+        return
     if dry:
         for f, off, old, new, va in edits:
             print(f'would patch {va:#x} {os.path.basename(f)}+{off:#x} {old:#010x} -> {new:#010x}')

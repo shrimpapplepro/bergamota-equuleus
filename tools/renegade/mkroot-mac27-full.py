@@ -84,6 +84,11 @@ HELLO = """<?xml version="1.0" encoding="UTF-8"?>
 <key>StandardOutPath</key><string>/dev/console</string><key>StandardErrorPath</key><string>/dev/console</string>
 </dict></plist>
 """
+# dsc_patch.py VA=OLD:NEW words for the 27.2 cache: __WSSystemCanCompositeWithMetal_block_invoke's timeout path
+# branches to the normal return (Metal flag stays 0 -> software compositor) and waits 1 s instead of 30 s.
+CACHE_PATCHES_27_2 = ['0x1828bee84=f90013ff:17fffff1', '0x1828bee0c=d2958001:d2994001',
+                      '0x1828bee10=f2bf8461:f2a77341', '0x1828bee14=f2c000c1:d503201f']
+
 REBOOTD = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -328,6 +333,10 @@ def main():
         mf.stage_macho(a, rootmnt)
     if 'cache' in stages:
         mf.stage_cache(a, rootmnt)
+        # macOS 27.2 (26B123) SkyLight: no Metal device -> software compositor instead of abort
+        # (tools/macdebug/patches-27.2/apply-ws-swcomp.sh is the same patch for an installed root)
+        subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tools/macdebug/dsc_patch.py'),
+                        os.path.join(rootmnt, CACHE_REL)] + CACHE_PATCHES_27_2, check=True)
     table_path = os.path.join(work, 'owners.tsv')
     if 'tweaks' in stages:
         table = mf.load_map(table_path)
