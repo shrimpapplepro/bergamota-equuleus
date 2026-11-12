@@ -209,7 +209,7 @@ def stage_tweaks(a, root, table):
                     ('private/tmp', 0o1777), ('private/var/tmp', 0o1777), ('private/var/log', 0o755),
                     ('private/var/run', 0o755), ('private/var/db', 0o755), ('private/var/folders', 0o755),
                     ('private/var/vm', 0o755), ('private/var/root', 0o755), ('System/Volumes/Data', 0o755),
-                    ('System/Volumes/Preboot', 0o755), ('System/Volumes/VM', 0o755)):
+                    ('System/Volumes/VM', 0o755)):     # no System/Volumes/Preboot: see the cryptex links below
         p = os.path.join(root, d)
         if not os.path.lexists(p):
             os.makedirs(p, exist_ok=True)
@@ -234,16 +234,21 @@ def stage_tweaks(a, root, table):
         plistlib.dump(c, f, fmt=plistlib.FMT_BINARY)
     log(f'launchd cache: {len(jobs)} jobs -> {len(keep)}: {sorted(v["Label"] for v in keep.values())}')
 
-    # /System/Cryptexes/{OS,App} -> ../../System/Volumes/Preboot/Cryptexes/{OS,App}: the cryptexes are merged into
-    # the root, so those point back at /
-    pc = os.path.join(root, 'System/Volumes/Preboot/Cryptexes')
-    os.makedirs(pc, exist_ok=True)
+    # The cryptexes are merged into the root: Apple's /System/Cryptexes/{OS,App} -> ../../System/Volumes/Preboot/
+    # Cryptexes/{OS,App} are pointed straight back at / (../..). There must be NO /System/Volumes/Preboot directory:
+    # CarbonCore (FSNodeServer_PreWarmVolumeCache, in every process that touches it: configd, init_featureflags,
+    # XProtect...) registers "/" and "/System/Volumes/Preboot/" as two volumes and abort()s with "FileIDTree: volume
+    # for device id 0x%x already exists" when both are the same file system (seen 2026-11-12). Missing, it only logs.
+    pre = os.path.join(root, 'System/Volumes/Preboot')
+    if os.path.lexists(pre):
+        shutil.rmtree(pre)
+        for k in [k for k in table if k == 'System/Volumes/Preboot' or k.startswith('System/Volumes/Preboot/')]:
+            del table[k]
     for n in ('OS', 'App'):
-        p = os.path.join(pc, n)
+        p = os.path.join(root, 'System/Cryptexes', n)
         if os.path.lexists(p):
             os.unlink(p)
-        os.symlink('../../../../..', p)
-    table.setdefault('System/Volumes/Preboot/Cryptexes', (0, 0, 0o755))
+        os.symlink('../..', p)
 
     fl = os.path.join(root, 'usr/share/firmlinks')
     if os.path.exists(fl):
