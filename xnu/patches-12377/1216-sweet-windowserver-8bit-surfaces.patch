@@ -1,0 +1,52 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -38,6 +38,7 @@
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOLocks.h>
+ #include <IOKit/system.h>
++#include <pexpert/pexpert.h>
+ #include <libkern/c++/OSArray.h>
+ #include <libkern/c++/OSDictionary.h>
+ #include <libkern/c++/OSNumber.h>
+@@ -666,6 +667,30 @@
+ {
+ 	uint64_t row = (uint64_t)sweet_div_up(width, ew) * bpe;
+ 	return (uint32_t)((row + SWEET_SURFACE_ROW_ALIGN - 1) & ~(uint64_t)(SWEET_SURFACE_ROW_ALIGN - 1));
++}
++
++/*
++ * Patch 1216: macOS 27's CoreAnimation gives the display surfaces of WindowServer the 10-bit format '&BGA'
++ * (0x26424741, 4 bytes per pixel); SkyLight's software compositor only renders into 8-bit formats ("Unimplemented
++ * pixel format of %i used in WSCompositeDestinationCreateWithIOSurface." -> abort) and the panel scans BGRA anyway.
++ * WindowServer's '&BGA' surfaces are recorded as BGRA. Boot-arg sweetsurf8=0: off.
++ */
++#define SWEET_FORMAT_ARGB2101010_EXT    0x26424741u     /* '&BGA' */
++static bool
++sweet_surface_wants_8bit(void)
++{
++	static int on = -1;
++	if (on < 0) {
++		int v = 1;
++		(void)PE_parse_boot_argn("sweetsurf8", &v, sizeof(v));
++		on = v ? 1 : 0;
++	}
++	if (!on) {
++		return false;
++	}
++	char name[32];
++	proc_selfname(name, sizeof(name));
++	return strcmp(name, "WindowServer") == 0;
+ }
+ 
+ /* Geometry from the creation properties (IOSurface.h keys). */
+@@ -680,6 +705,9 @@
+ 	s->elementWidth = (uint8_t)sweet_dict_u32(props, "IOSurfaceElementWidth", 1);
+ 	s->elementHeight = (uint8_t)sweet_dict_u32(props, "IOSurfaceElementHeight", 1);
+ 	s->pixelFormat = sweet_dict_u32(props, "IOSurfacePixelFormat", 0);
++	if (s->pixelFormat == SWEET_FORMAT_ARGB2101010_EXT && s->bytesPerElement == 4 && sweet_surface_wants_8bit()) {
++		s->pixelFormat = SWEET_FORMAT_BGRA;
++	}
+ 	s->cacheMode = sweet_dict_u32(props, "IOSurfaceCacheMode", 0);
+ 	s->offset = sweet_dict_u32(props, "IOSurfaceOffset", 0);
+ 	if (s->width > SWEET_SURFACE_MAX_DIM || s->height > SWEET_SURFACE_MAX_DIM ||
