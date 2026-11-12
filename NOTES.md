@@ -2,7 +2,21 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 11:15: core daemons START AT BOOT; WindowServer needs IOHIDSystem <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 13:00: WindowServer STAYS UP (1214), waits for IOSurfaceRoot (1215 building) <<<
+* Kernel 1214 (CI 43149059336, image `enxerto/out/equuleus-mac27-full-6.img`, booted 12:5x): IOHIDSystem stand-in
+  (iokit/Kernel/arm/hid/SweetHIDSystem.cpp; EvGlobals v4 layout measured from the macOS SDK; connect types 0/1;
+  boot-arg sweethidsystem=0 hides it). WindowServer no longer exits: "SWEET HIDSYS: connect type 0 selector 0", opens
+  the IOMFB user client (SWEET FB: WindowServer sel 88, sel 83 -> 0), then sits at 0 % CPU.
+* `sample PID 1` works on the phone (/usr/bin/sample): WindowServer main thread in WSInitialize ->
+  CAWindowServer _detectDisplays -> AppleInternalDisplay::open -> AppleDisplay ctor -> IOMobileFramebuffer
+  kern_CopyLayerDisplayedSurface -> -[IOSurface initWithMachPort:] -> _ioSurfaceConnectInternal -> sleep loop:
+  macOS IOSurface does IOServiceNameMatching("IOSurfaceRoot") (resolved with tools/macdebug/dsc_stub.py: arm64e
+  auth stubs, GOT values are cache offsets from 0x180000000); ours is named IOCoreSurfaceRoot (iOS).
+  Patch 1215 (CI 43152364479): IOCoreSurfaceRoot::compareName accepts both names (one surface table).
+* 1214 first build failed: kIOUserClientDefaultLocking*Key / kIOUserClientEntitlementsKey are not visible in kernel
+  C++ (dropped). dxb's own "makedefs/MakeInc.def: patch does not apply" lines are normal (also in green runs).
+
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 11:15: core daemons START AT BOOT; WindowServer needs IOHIDSystem (history) <<<
 * Phone now: boot image `enxerto/out/equuleus-mac27-full-5.img` (kernel 1213, CI 43142608454; cmdline =
   scratchpad mac27-full3.cmdline). Root on `ios_data` edited in place over SSH since the 08:28 image (NOT in
   the image file on DEEZNUTS, the builder carries the same changes since 98e495c): launchd cache
