@@ -2,7 +2,42 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 14:00: WindowServer reaches its server loop + first display update <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 16:40: WindowServer + loginwindow RUN; screen black (compositing) <<<
+* Kernels since 14:00: 1216 (WindowServer '&BGA' surfaces -> BGRA), 1217 (HIDParameters on the IOHIDSystem stand-in:
+  WindowServer deadlocked asking its own IOHIDEventSystem for NXClickTime), 1218 (identitysvc stand-in registers and
+  idles: opendirectoryd spun at 100 % on ENOSYS). Image enxerto/out/equuleus-mac27-full-10.img (CI 43164710718).
+* IDLE SLEEP PANICS THE PHONE: powerd idle sleep after 10 min -> "SWEET CPU: CPU halt/suspend is not implemented"
+  (pstore 20261112-142323). Now `pmset -a sleep 0 displaysleep 0 disksleep 0 standby 0 powernap 0` on the root
+  (persists). TODO kernel: platform expert should declare the system unable to sleep.
+* GUI bring-up by hand (no boot cache entries yet): /usr/local/bin/sweet-gui (tools/macdebug/sweet-gui) starts
+  launchservicesd, coreservicesd, lsd, storagekitd, WindowServer, loginwindow (keep files); bluetoothd via sweet-try.
+* Findings on the way: AppKit apps abort in _RegisterApplication without launchservicesd ("unable to get application
+  ASN"); Language Chooser hangs in StorageKit diskForPath without storagekitd, then in IOBluetoothCoreBluetooth-
+  Coordinator init (no Bluetooth controller): skipped by /var/db/.AppleSetupDone + AppleLanguages en-US + a local
+  user. QuartzCore's CPU renderer asserts "r.update ()->_backdrop_invalidations_finalized" (ogl-layer.cpp) for
+  backdrop (blur) layers: NOP of the check -> NULL deref (reverted, tools/macdebug/patches-27.2/*.reverted);
+  instead `defaults write com.apple.universalaccess reduceTransparency -bool true` (root + /Library).
+* User mac (501, admin, password "mac"): dscl -passwd crashes opendirectoryd (os_unfair_lock NULL in an OD module),
+  so the record /var/db/dslocal/nodes/Default/users/mac.plist got ShadowHashData (SALTED-SHA512-PBKDF2, 45000) +
+  authentication_authority written directly (backup /var/tmp/mac.plist.bak); loginwindow now lists mac as able to
+  log in (dscl -authonly still eServerError).
+* oslogtap.dylib (tools/macdebug/oslogtap.c): DYLD_INSERT_LIBRARIES interposer that writes readable os_log lines
+  (format + args) to /var/tmp/oslog-NAME.log. Used via plist copies with EnvironmentVariables (/var/tmp/lw.plist,
+  /var/tmp/ws.plist bootstrapped instead of the staged ones). This made loginwindow/WindowServer debuggable.
+* WindowServer: display modes OK (828x1792 native, 60 Hz, powers the display on), our SweetHIDTouch is taken as the
+  built-in direct-touch digitizer but "has no usable displayUUID property" (needs the display's IOMFBUUID, as
+  UniXNU's notes say). Missing services it/loginwindow ask for: runningboard, tccd, pboard, appleeventsd,
+  WindowManager, logind/session owner (LFSMRegisterSessionOwner = 22), Spotlight agent.
+* Window test: tools/macdebug/src/redwin.m (AppKit red window). "App redwin cannot order in untagged windows before
+  login" -> NSWindow.canBecomeVisibleWithoutLogin = YES -> window reported onscreen, but the display surfaces
+  (surfpeek: IOSurface ids 44/45, 828x1792 BGRA, plane offset 0) are 100 % black and no window surface is ever
+  created: WindowServer's (software) compositing does not render window content yet. NEXT: find why (CA render
+  server / CompositorSW path, maybe the Metal-absent flag leaves the window compositor unset).
+* Tools: tools/macdebug/{phone-cache-patch.sh, dsc_patch_remote.py, dsc_stub.py, fbshot2png.py, oslogtap.c,
+  src/sweet-windows.m (CGWindowList dump), src/surfpeek.c (IOSurface pixel stats by id)}; phonectl shot works on
+  the macOS root (kernel frame copy).
+
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 14:00: WindowServer reaches its server loop + first display update (history) <<<
 * 1215 (CI 43152364479, image full-7) fixed the IOSurfaceRoot wait: WindowServer opens the display (IOMFB sels
   88/74/72/25/12/79), HID events/cursor (HIDSYS sel 1, 4), creates cursor surfaces (512x512 BGRA).
 * Then abort in __WSSystemCanCompositeWithMetal_block_invoke: no Metal device -> waits 30 s ("Metal device initially
