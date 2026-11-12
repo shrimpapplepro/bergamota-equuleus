@@ -2,7 +2,40 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 01:40: FULL macOS 27.2 root built, being written to ios_data <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 09:15: FULL macOS 27.2 root BOOTS to SSH (minimal jobs); opendirectoryd crashes <<<
+* Phone state: `ios_data` = `/Volumes/DEEZNUTS/mac27-study/full/mac27-full.img` as rebuilt 08:28 (manifest `.phone`
+  sha256 fda9e16b...), launchd job cache cut to ONLY `org.sweet.dropbear` + `org.sweet.mac27.hello`
+  (`--stages tweaks,seal --allow-jobs` with an empty list; all 427 Apple daemon plists in
+  `/System/Library/LaunchDaemons.sweet-off/`). Boot image `enxerto/out/equuleus-mac27-full-3.img` (sha af898a56...):
+  kernel 1211 (CI run 43128696142, includes 1210), cmdline = full-2 + ` sweetbootwd=300` (597 bytes; scratchpad
+  `mac27-full3.cmdline`, script `mk-full3.sh`). SSH answered ~30 s after `fastboot boot` (09:05): `sw_vers` macOS 27.2
+  26B123, root fs rw, uid/gid names resolve (files fallback without opendirectoryd).
+* Why the 08:05 boot (18 Apple daemons in the cache) never gave SSH: dropbear and `/bin/sh` hang in libinfo's user
+  lookup (last syscall `persona`) waiting for opendirectoryd, which crash-loops (logd crash-loops too, ~1/s).
+  Confirmed at 09:08: `launchctl bootstrap system .../LaunchDaemons.sweet-off/com.apple.opendirectoryd.plist` on the
+  running root -> opendirectoryd CRASHes: first run SIGSYS (missing syscall; pc in libsystem_kernel), then every
+  respawn SIGILL on `udot.4s v0, v2, v1` (0x6e819440, FEAT_DotProd; SDM845 Kryo 385 should have it - check
+  hw.optional / ID_AA64ISAR0 DP, and whether XNU or the commpage hides it). From then on every getpwnam (each SSH
+  login) blocks: phone locked out until a hard reset (the bootstrap is not persistent). Symbolication via
+  `ipsw dyld a2s` on `/Volumes/DEEZNUTS/mac27-study/cache/26B123__MacOS/dyld_shared_cache_arm64e` (slide 0x888c000).
+* RULE for daemon bring-up over SSH: start each risky job with an automatic undo, e.g.
+  `launchctl bootstrap system P; (sleep 60; launchctl bootout system/LABEL) &` and a re-armed watchdog.
+* Kernel 1210 (boot watchdog): `sweetbootwd=SECONDS`; at the deadline no TCP listener on `sweetbootwdport` (22) ->
+  console tail to pstore + reboot_kernel (sync) with warm reset to the sweetpanic mode (LineageOS), direct reset 60 s
+  later if that hangs. `sysctl kern.sweet_bootwd` = seconds left; write 0 disarms, N re-checks in N s. Verified: at
+  09:05 boot it read 288 and stood down once dropbear listened. It does NOT catch "listening but logins hang".
+* Kernel 1211: no kqworkloop limits on SWEET (`sweetkqwllimits=1` keeps launchd's). Did not fix opendirectoryd
+  (crashes above are something else) but is needed per UniXNU macOS profile / macOS-DroidVM 0011.
+* External references (2026-11-12 search): UniXNU (github.com/UniXNU/UniXNU) has a macOS 27.3 profile, arm64e only
+  (PAC hardware; sheng SM8550) - its docs/porting/macos.md lists what macOS userland needs. Droid-VM/macOS-DroidVM
+  (macOS 27 guest under Gunyah) carries ~100 xnu-12377 patches; relevant ones copied to the scratchpad
+  (`unixnu-ref/droidvm/`): mac-sandbox-init-enoent + mac-sandbox-permissive, 0046 macOS syscalls the iOS config leaves
+  out (sysv_sem/msg/shm, sendfile, searchfs, file leases: likely the opendirectoryd SIGSYS), audit-session-stub,
+  malloc-ranges-off, user-va-512g. Their lockdown-state-public and shared-region-8g = our 1206 / 1208.
+* write-ios-data.py: 1 GiB pieces + 60 s stall watchdog with 3 retries, `--full --from MIB` resumes (an adb
+  exec-in pipe hung for 3.5 h at 6.8 GiB at 03:46).
+
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 01:40: FULL macOS 27.2 root built, being written to ios_data (history) <<<
 * Sources (UniversalMac_27.2_26B123, identity vma2macosap): `ipsw extract --dmg fs|sys|app` then `ipsw fw aea`
   (keys fetched by ipsw) -> `/Volumes/DEEZNUTS/mac27-study/full/26B123__MacOS/`: OS 141-12228-170.dmg (14.3 GB),
   SystemOS cryptex 141-12293-172.dmg (2.9 GB, dyld cache in /System/Library/dyld), AppOS 141-12233-175.dmg.
