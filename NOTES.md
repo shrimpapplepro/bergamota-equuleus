@@ -2,7 +2,27 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 13:00: WindowServer STAYS UP (1214), waits for IOSurfaceRoot (1215 building) <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 14:00: WindowServer reaches its server loop + first display update <<<
+* 1215 (CI 43152364479, image full-7) fixed the IOSurfaceRoot wait: WindowServer opens the display (IOMFB sels
+  88/74/72/25/12/79), HID events/cursor (HIDSYS sel 1, 4), creates cursor surfaces (512x512 BGRA).
+* Then abort in __WSSystemCanCompositeWithMetal_block_invoke: no Metal device -> waits 30 s ("Metal device initially
+  absent.") -> "No suitable Metal devices present after 30 seconds." -> abort. SkyLight HAS a software compositor
+  (CompositorSW.cc, "Software compositor activated.", chosen by the debug-option path when the Metal flag is 0).
+* SkyLight PATCHED IN THE PHONE'S DYLD CACHE (not in any image or builder yet!): file
+  /System/Library/dyld/dyld_shared_cache_arm64e.01, VA 0x1828bee84 f90013ff -> 17fffff1 (timeout path: b to the
+  normal return, Metal flag stays 0) and 0x1828bee0c..14 (30 s -> 1 s); CodeDirectory page hash of page 2351
+  updated. Script: tools/macdebug/patches-27.2/apply-ws-swcomp.sh (made by tools/macdebug/dsc_patch_remote.py
+  from the PHONE's signature blob: the Mac copy cache-pacstrip has identical pages but a different signature
+  region). Originals saved on the phone: /var/tmp/dsc01-page2351.orig, /var/tmp/dsc01-sigslot.orig
+  (32 bytes at file offset 130524864). TODO: apply it in the builder's cache stage.
+* With the patch WindowServer runs its server loop (CGXRunOneServicesPass) and the first CGXUpdateDisplay creates
+  the display surface 828x1792 '&BGA' (0x26424741, 10-bit), then aborts in WSCompositeDestinationCreateWithIOSurface:
+  "Unimplemented pixel format of %i" (software compositor: 8-bit only). Patch 1216 (CI 43156310949): our surface
+  driver records WindowServer's '&BGA' surfaces as BGRA (sweetsurf8=0: off).
+* Screenshots of the macOS boot: `phonectl shot NAME` (kernel frame copy via `sysctl -b kern.sweet_fb_shot`, PNG via
+  tools/macdebug/fbshot2png.py). Still the Bergamota logo so far.
+
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 13:00: WindowServer STAYS UP (1214), waits for IOSurfaceRoot (1215) (history) <<<
 * Kernel 1214 (CI 43149059336, image `enxerto/out/equuleus-mac27-full-6.img`, booted 12:5x): IOHIDSystem stand-in
   (iokit/Kernel/arm/hid/SweetHIDSystem.cpp; EvGlobals v4 layout measured from the macOS SDK; connect types 0/1;
   boot-arg sweethidsystem=0 hides it). WindowServer no longer exits: "SWEET HIDSYS: connect type 0 selector 0", opens
