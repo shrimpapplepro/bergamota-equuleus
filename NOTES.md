@@ -2,7 +2,45 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 17:30: FIRST macOS 27.2 WINDOW ON THE PANEL <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 ~19:00: macOS 27.2 LOGIN UI (SecurityAgent) ON THE PANEL, landscape <<<
+* Screenshot: /Volumes/DEEZNUTS/mi8pro-remote/shots/login-authd-1.png. loginwindow reaches LoginwindowUIShown,
+  SecurityAgent launches and draws an on-screen 410x368 auth window (OK button renders; blur-material backdrops
+  are still black = the compositor doesn't fill visual-effect layers). Cannot interact yet: no input path.
+* LANDSCAPE: swap canvas-width/canvas-height in the ADT (/arm-io/disp0) -> macOS sees a 1792x828 display and lays
+  out correctly; on the panel it is a scaled band (the fb scaler fits the canvas into the portrait panel; a true
+  90-deg rotate in SweetFramebuffer is not written). Test image built by swapping the two u32s in
+  enxerto/out/equuleus-n104-2x-gpu-wlan.adt -> ...-land.adt (scratchpad mk-land1.sh), kernel 1218,
+  enxerto/out/equuleus-mac27-land-1.img.
+* THE KEY FIX (authd / code identity): every binary on the root is ad-hoc re-signed (inherent to PAC-stripping), so
+  macOS peer code-signing checks that demand `anchor apple` always fail. authd sets
+  `_xpc_connection_set_peer_code_signing_requirement(conn, "identifier \"com.apple.SecurityAgent\" and anchor
+  apple")` on its login-agent connection; libxpc then rejects the ad-hoc SecurityAgent ("Received message forbidden
+  due to code signing requirement", -67050) and login dies with "the responder does not satisfy the required code
+  identity" / "Error creating mechanism agent". FIX (narrow, authd-only, NOT a system-wide codesign bypass): replace
+  that one `bl` with `mov w0,#0` in each arm64e slice so the requirement is never set. tools/macdebug/patch-authd.py
+  (finds the call per slice via `otool -tV`, re-sign ad-hoc preserving entitlements). On the phone: patched authd at
+  the Security.framework path, backup /var/tmp/authd.orig. Builder (mkroot-mac27-full stage_tweaks) now does this.
+* Session bring-up sequence that works (sweet-gui + extras): launchservicesd, coreservicesd, lsd, storagekitd,
+  logind, runningboardd, tccd.system, appleeventsd, syspolicyd, bluetoothd, WindowServer, loginwindow, plus the
+  login SecurityAgent (com.apple.security.agent.login) + authhost as LaunchDaemons, and LaunchAgents
+  security.agent/pboard/WindowManager/CoreAuthentication.agent/LocalAuthentication.UIAgent/ctkd/pkd copied into
+  /System/Library/LaunchAgents. GOTCHAS: logind treats every boot as a restart because /var/run/*.didRunThisBoot
+  persist on the single HFS root (no tmpfs /var/run) -> delete them so logind creates the console session;
+  bluetoothd must run or Language Chooser hangs in IOBluetoothCoreBluetoothCoordinator; user `mac` (501) password
+  set by writing ShadowHashData + authentication_authority into the dslocal record directly (dscl -passwd crashes
+  opendirectoryd). Setup skipped (.AppleSetupDone, AppleLanguages en-US) + auto-login (/etc/kcpassword obfuscated
+  with the fixed key, autoLoginUser=mac).
+* oslogtap.dylib (tools/macdebug/oslogtap.c): the ONLY way to read os_log on this root (`log show` can't decode our
+  rewritten cache). Interposes _os_log*_impl, expands format+args, writes /var/tmp/oslog-NAME.log; inject via a
+  plist copy with EnvironmentVariables (DYLD_INSERT_LIBRARIES) bootstrapped in place of the staged job.
+* NEXT (interaction): WindowServer takes our SweetHIDTouch as the built-in digitizer but logs "digitizer service has
+  no usable displayUUID property; treating as no digitizer added", and reads events from the modern IOHIDEventSystem
+  (not the legacy IOHIDSystem shmem), so CGEventPost / the stand-in do not deliver. Wiring the touch panel as a
+  trackpad needs the digitizer to publish displayUUID = the framebuffer's IOMFBUUID (UniXNU does this). Also: true
+  landscape rotate in the fb driver; fill visual-effect backdrops in the compositor; builder parity for the remaining
+  on-phone edits (launchd cache, Preboot, user record, boot-marker cleanup).
+
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 17:30: FIRST macOS 27.2 WINDOW ON THE PANEL (history) <<<
 * Screenshot: docs/milestones/2026-11-12-macos27-first-window.png (redwin: AppKit window, title bar + traffic
   lights, SF text, drawn by WindowServer's software compositor, scanned out by our IOMFB).
 * The black screen was WindowServer crash-looping (launchctl print: runs 4, "Abort trap: 6") on QuartzCore's CPU

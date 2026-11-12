@@ -223,6 +223,27 @@ def stage_tweaks(a, root, table):
     put(os.path.join(ROOT, 'tools/macdebug/sweet-try'), 'usr/local/bin/sweet-try', 0o755)
     for d in ('usr/local', 'usr/local/bin', 'private/etc/dropbear'):
         table[d] = (0, 0, 0o755)
+
+    # authd requires `identifier "com.apple.SecurityAgent" and anchor apple` on its login agent; our binaries are
+    # ad-hoc re-signed (no Apple anchor), so system.login.console fails and no login UI appears. Patch authd not to
+    # set that peer requirement, then re-sign ad-hoc keeping its entitlements (tools/macdebug/patch-authd.py).
+    authd_rel = 'System/Library/Frameworks/Security.framework/Versions/A/XPCServices/authd.xpc/Contents/MacOS/authd'
+    authd = os.path.join(root, authd_rel)
+    if os.path.exists(authd):
+        ents = subprocess.run(['codesign', '-d', '--entitlements', ':-', authd], capture_output=True).stdout
+        subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tools/macdebug/patch-authd.py'), authd, authd + '.p'],
+                       check=True)
+        os.replace(authd + '.p', authd)
+        os.chmod(authd, 0o755)
+        sign = ['codesign', '-f', '-s', '-', '--preserve-metadata=identifier,flags']
+        if ents.startswith(b'<?xml'):
+            with open(authd + '.ent', 'wb') as f:
+                f.write(ents)
+            sign += ['--entitlements', authd + '.ent']
+        subprocess.run(sign + [authd], check=True)
+        if os.path.exists(authd + '.ent'):
+            os.remove(authd + '.ent')
+        log('authd: patched to not require anchor-apple on its login agent, re-signed')
     for k in ('dropbear_ed25519_host_key', 'dropbear_ecdsa_host_key'):
         if os.path.exists(os.path.join(a.keys, k)):
             put(os.path.join(a.keys, k), 'private/etc/dropbear/' + k, 0o600)
