@@ -2,7 +2,37 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 09:15: FULL macOS 27.2 root BOOTS to SSH (minimal jobs); opendirectoryd crashes <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 10:50: core macOS daemons RUN (opendirectoryd, configd...); remote reboot <<<
+* REMOTE REBOOT, nobody at the phone (user away 2026-11-12): `tools/equuleus/rebootd/sweet-rebootd` (TCP 5141, no
+  shell / user lookups / XPC; "ping" -> pong, "sweet-reboot normal|fastboot|recovery" -> kern.sweet_reboot_mode +
+  sync + reboot(2)). On the phone's root: /usr/local/bin/sweet-rebootd + job org.sweet.rebootd added to
+  /System/Library/xpc/launchd.plist (backup launchd.plist.before-rebootd); the builder now installs it too.
+  `phonectl rescue [normal|fastboot|recovery]`; `phonectl state` says `ios-hung` when SSH hangs but rebootd answers;
+  `fastboot` / `boot-los` fall back to it. Verified twice: rescue fastboot -> fastboot in 11 s -> `fastboot boot`.
+  Recovery ladder now: panic -> 1207 pstore + reset; boot never listens on 22 -> 1210 watchdog; userland hung ->
+  rebootd. Still uncovered: a kernel hang without panic (wdt=-1).
+* Kernel 1212 (CI 43139344462, image `enxerto/out/equuleus-mac27-full-4.img`, cmdline = full-3): emulates
+  LRCPC2 LDAPUR/STLUR, DotProd SDOT/UDOT, FlagM, SB, SHA3 for EL0 (SDM845 has no DotProd/FHM/FCMA/JSCVT/LRCPC2/FlagM/
+  SB/BF16/SHA3; hw.optional confirms; macOS 27 code uses them unconditionally, counts in the 27.2 cache: LRCPC2 ~128k,
+  FHM ~27k, SHA3 ~20k, FCMA, DotProd ~5k, BF16 273). `tools/v8emu/` differential test: 1.3M/class vs Apple hardware
+  on himari, and on the phone (kernel traps) 0 failures. identitysvc (293) -> ENOSYS without CONFIG_EXT_RESOLVER
+  (0057 dropped it for iOS; opendirectoryd died of SIGSYS). NOT yet: float FHM/FCMA/BF16 (need soft-float).
+* With 1212: opendirectoryd runs (id/dscl answer through it), logd, notifyd, syslogd, configd (configures ue0 itself),
+  diskarbitrationd, securityd, powerd, distnoted, UserEventAgent-System, XProtect plugin service all stay up.
+* CarbonCore abort found (configd, init_featureflags, XProtect: abort in dispatch_once -> _FSMountPrepare ->
+  FSNodeServer_PreWarmVolumeCache): it registers "/" and "/System/Volumes/Preboot/" as volumes and asserts
+  "FileIDTree: volume for device id 0x%x already exists" when both are one HFS. Fixed on the phone (Preboot moved to
+  Preboot.sweet-off, /System/Cryptexes/{OS,App} -> ../..) and in the builder (commit 2b29579).
+* cfprefsd exits 254 (so `defaults` hangs): last call __mac_syscall("Quarantine", 87) = ENOPOLICY (no
+  Quarantine.kext). Patch 1213 (CI 43142608454, building): "Quarantine" stand-in policy answering 0 + sysctl
+  kern.sweet_syserr_names to point the failed-syscall tracer at any process without a reboot.
+* Tools: scratchpad `dsc_sym.py` (addr -> image + nearest export in 1 s; ipsw a2s took >50 min on exFAT),
+  `dsc_around.py` (disassembly + BL targets + strings before an address), `sweet-try LABEL [SECS]` on the phone
+  (/usr/local/bin: bootstrap a staged daemon, auto bootout unless /var/tmp/sweet-keep.LABEL).
+* Next: kernel 1213 -> cfprefsd; then put the working daemons into the phone's launchd cache one by one; float
+  emulation (FHM first); then WindowServer.
+
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 09:15: FULL macOS 27.2 root BOOTS to SSH (minimal jobs); opendirectoryd crashes (history) <<<
 * Phone state: `ios_data` = `/Volumes/DEEZNUTS/mac27-study/full/mac27-full.img` as rebuilt 08:28 (manifest `.phone`
   sha256 fda9e16b...), launchd job cache cut to ONLY `org.sweet.dropbear` + `org.sweet.mac27.hello`
   (`--stages tweaks,seal --allow-jobs` with an empty list; all 427 Apple daemon plists in
