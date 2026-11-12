@@ -1,0 +1,32 @@
+diff --git a/bsd/kern/kern_proc.c b/bsd/kern/kern_proc.c
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -5460,6 +5460,28 @@
+ 	struct filedesc *fdp = &p->p_fd;
+ 	lck_mtx_lock_spin_always(&fdp->fd_kqhashlock);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/*
++	 * sweet (macOS 27 user space): launchd sets the kqworkloop limits its daemon plists name
++	 * (opendirectoryd: 3 soft, 10 hard) and xnu-12377 counts past them in normal operation, so the hard
++	 * limit ends the daemon; a crash-looping opendirectoryd leaves every getpwnam() waiting (dropbear,
++	 * /bin/sh). No limits, as UniXNU's macOS profile and macOS-DroidVM 0011 do. Boot-arg
++	 * sweetkqwllimits=1 keeps launchd's values.
++	 */
++	{
++		extern boolean_t PE_parse_boot_argn(const char *arg_string, void *arg_ptr, int max_arg);
++		static int sweet_kqwl = -1;
++		if (sweet_kqwl < 0) {
++			int on = 0;
++			(void)PE_parse_boot_argn("sweetkqwllimits", &on, sizeof(on));
++			sweet_kqwl = on;
++		}
++		if (!sweet_kqwl) {
++			soft_limit = KQWL_LIMIT_SENTINEL;
++			hard_limit = KQWL_LIMIT_SENTINEL;
++		}
++	}
++#endif
+ 	fdp->kqwl_dyn_soft_limit = soft_limit;
+ 	fdp->kqwl_dyn_hard_limit = hard_limit;
+ 	/* Make sure existing limits aren't exceeded already */
