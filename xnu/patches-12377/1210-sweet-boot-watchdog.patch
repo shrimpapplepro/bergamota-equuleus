@@ -1,0 +1,256 @@
+diff --git a/bsd/dev/sweet_reboot.c b/bsd/dev/sweet_reboot.c
+--- a/bsd/dev/sweet_reboot.c
++++ b/bsd/dev/sweet_reboot.c
+@@ -41,6 +41,16 @@
+  * /sys/fs/pstore/dmesg-ramoops-0 (tools/equuleus/phonectl panics fetches it).
+  * Boot-arg sweetpstore=0: no pstore copy. The sysctl does not affect panics.
+  *
++ * Boot watchdog (patch 1210): boot-arg sweetbootwd=SECONDS (default 0 = off).
++ * That long after sweet_reboot_init() the kernel looks for a TCP listener on
++ * port sweetbootwdport (default 22, the SSH server). None: userspace never got
++ * that far (a hung launchd or daemon leaves no way in, nobody at the phone), so
++ * the console tail goes into the pstore record as for a panic and the phone
++ * reboots (reboot_kernel: sync, unmount) with a warm reset into the sweetpanic
++ * mode (default LineageOS); if that has not reset the SoC 60 s later, a direct
++ * reset follows. Sysctl kern.sweet_bootwd: read = seconds left (0 = off or
++ * done), write 0 = disarm, N = check again in N s.
++ *
+  * Reset time may be non-preemptible (halt_all_cpus, panic): everything is
+  * mapped by sweet_reboot_init() and the SPMI helpers run lock-less there.
+  * All logs start with "SWEET REBOOT:".
+@@ -55,6 +65,11 @@
+ #include <sys/msgbuf.h>
+ #include <kern/debug.h>
+ #include <kern/clock.h>
++#include <kern/thread_call.h>
++#include <sys/reboot.h>
++#include <sys/socketvar.h>
++#include <netinet/in.h>
++#include <netinet/in_pcb.h>
+ #include "sweet_spmi.h"
+ #include "sweet_board.h"
+ 
+@@ -64,6 +79,7 @@
+ extern int sweet_ufs_flush_final(void);      /* bsd/dev/sweet_ufs.c: SYNCHRONIZE CACHE (patch 0221) */
+ extern void sweet_early_putc(char c);        /* osfmk/arm64/sweet_early.c: draws on the panel during a panic */
+ extern unsigned long gPhysBase, gPhysSize;   /* kernel-managed RAM (as in mach/arm/vm_param.h) */
++extern struct inpcbinfo tcbinfo;             /* netinet/tcp_subr.c (1210: boot watchdog) */
+ 
+ /* 1207: Linux ramoops (LineageOS DT ramoops@b0000000: record-size 0x40000, ecc 0), dmesg record 0 */
+ #define SR_PSTORE_PA     0xb0000000ull
+@@ -104,6 +120,13 @@
+ static int sr_panic_wait = 10;             /* seconds the panic stays on screen */
+ static volatile uint8_t *sr_pstore;        /* NULL: no pstore copy */
+ static bool sr_pon_warm_ready, sr_panic_handled;
++
++/* 1210: boot watchdog */
++static int sr_bootwd_port = 22;
++static thread_call_t sr_bootwd_call, sr_bootwd_force_call;
++static uint64_t sr_bootwd_deadline;        /* 0: not armed */
++static bool sr_bootwd_fired;               /* the reboot is the watchdog's: warm reset, keep pstore */
++static void sr_bootwd_arm(int secs);
+ 
+ /* printf can take console locks: none of it once a panic began (the screen and pstore carry the panic). */
+ #define SR_LOG(...) do { if (!sr_in_panic) { printf(__VA_ARGS__); } } while (0)
+@@ -227,6 +250,15 @@
+ 	printf("SWEET REBOOT: panic -> %s after %d s, pstore record %s\n",
+ 	    sr_panic_mode < 0 ? "stay (sweetpanic=off)" : sr_name(sr_panic_mode), sr_panic_wait,
+ 	    sr_pstore ? "0xb0000000 mapped" : "off");
++
++	/* 1210: boot watchdog */
++	int wd = 0, port = sr_bootwd_port;
++	if (PE_parse_boot_argn("sweetbootwdport", &port, sizeof(port)) && port > 0 && port < 65536) {
++		sr_bootwd_port = port;
++	}
++	if (PE_parse_boot_argn("sweetbootwd", &wd, sizeof(wd)) && wd > 0) {
++		sr_bootwd_arm(wd);
++	}
+ }
+ 
+ /*
+@@ -359,9 +391,9 @@
+  * data[0..length)).
+  */
+ static void
+-sr_pstore_write(void)
++sr_pstore_write(const char *why)          /* NULL: a panic (paniclog first); else the reason line, no paniclog */
+ {
+-	char line[160];
++	char line[200];
+ 	uint64_t now = mach_absolute_time(), ns = 0;
+ 
+ 	if (!sr_pstore) {
+@@ -370,14 +402,21 @@
+ 	absolutetime_to_nanoseconds(now, &ns);
+ 	sr_ps_len = 0;
+ 	sr_ps_str("====0.0-D\n");
+-	snprintf(line, sizeof(line), "SWEET PANIC: xnu panic at %llu.%03llu s uptime, saved by sweet_reboot.c (patch 1207)\n",
+-	    ns / 1000000000ull, (ns / 1000000ull) % 1000ull);
++	if (why) {
++		snprintf(line, sizeof(line), "%s at %llu.%03llu s uptime, saved by sweet_reboot.c (patch 1210)\n",
++		    why, ns / 1000000000ull, (ns / 1000000ull) % 1000ull);
++	} else {
++		snprintf(line, sizeof(line), "SWEET PANIC: xnu panic at %llu.%03llu s uptime, saved by sweet_reboot.c (patch 1207)\n",
++		    ns / 1000000000ull, (ns / 1000000ull) % 1000ull);
++	}
+ 	sr_ps_str(line);
+ 	sr_ps_str("boot-args: ");
+ 	sr_ps_str(PE_boot_args());
+ 	sr_ps_str("\n");
+ 	struct embedded_panic_header *ph = panic_info;
+-	if (gPanicBase && ph && ph->eph_magic == EMBEDDED_PANIC_MAGIC) {
++	if (why) {
++		/* no panic: the console tail below is the record */
++	} else if (gPanicBase && ph && ph->eph_magic == EMBEDDED_PANIC_MAGIC) {
+ 		sr_ps_panic_part("\n--- paniclog ---\n", ph->eph_panic_log_offset, ph->eph_panic_log_len, 160u * 1024u);
+ 		sr_ps_panic_part("\n--- other log ---\n", ph->eph_other_log_offset, ph->eph_other_log_len, 16u * 1024u);
+ 	} else {
+@@ -427,7 +466,7 @@
+ 		return;
+ 	}
+ 	sr_panic_handled = true;
+-	sr_pstore_write();
++	sr_pstore_write(NULL);
+ 	if (sr_panic_mode < 0) {
+ 		sr_screen(sr_pstore ? "\nSWEET PANIC: log in pstore; sweetpanic=off, staying here\n" : "\n");
+ 		return;
+@@ -441,6 +480,129 @@
+ 	sr_reset(sr_panic_mode, true);
+ }
+ 
++/* 1210: is any TCP socket listening on the port (IPv4 or IPv6, any address)? */
++static bool
++sr_tcp_listening(int port)
++{
++	struct inpcb *inp;
++	bool found = false;
++
++	if (tcbinfo.ipi_listhead == NULL) {
++		return false;
++	}
++	lck_rw_lock_shared(&tcbinfo.ipi_lock);
++	LIST_FOREACH(inp, tcbinfo.ipi_listhead, inp_list) {
++		if (inp->inp_state != INPCB_STATE_DEAD && inp->inp_lport == htons((u_short)port) &&
++		    inp->inp_socket != NULL && (inp->inp_socket->so_options & SO_ACCEPTCONN)) {
++			found = true;
++			break;
++		}
++	}
++	lck_rw_done(&tcbinfo.ipi_lock);
++	return found;
++}
++
++static int
++sr_reboot_target(void)
++{
++	return sr_panic_mode < 0 ? SR_NORMAL : sr_panic_mode;
++}
++
++/* 1210: the orderly reboot did not reset the SoC in 60 s: reset directly (warm, the pstore record stays). */
++static void
++sr_bootwd_force(thread_call_param_t p0, thread_call_param_t p1)
++{
++#pragma unused(p0, p1)
++	printf("SWEET BOOTWD: reboot did not finish in 60 s, resetting directly\n");
++	(void)sweet_ufs_flush_final();
++	sr_reset(sr_reboot_target(), true);
++}
++
++static void
++sr_bootwd_fire(thread_call_param_t p0, thread_call_param_t p1)
++{
++#pragma unused(p0, p1)
++	char why[120];
++
++	if (!sr_bootwd_deadline) {
++		return;
++	}
++	sr_bootwd_deadline = 0;
++	if (sr_tcp_listening(sr_bootwd_port)) {
++		printf("SWEET BOOTWD: TCP port %d is listening; watchdog done\n", sr_bootwd_port);
++		return;
++	}
++	snprintf(why, sizeof(why), "SWEET BOOTWD: nothing listens on TCP port %d; reboot to %s",
++	    sr_bootwd_port, sr_name(sr_reboot_target()));
++	printf("%s (console tail -> pstore)\n", why);
++	sr_bootwd_fired = true;
++	sr_pstore_write(why);
++	if (sr_bootwd_force_call == NULL) {
++		sr_bootwd_force_call = thread_call_allocate(sr_bootwd_force, NULL);
++	}
++	if (sr_bootwd_force_call != NULL) {
++		uint64_t dl;
++		clock_interval_to_deadline(60, NSEC_PER_SEC, &dl);
++		thread_call_enter_delayed(sr_bootwd_force_call, dl);
++	}
++	sr_override = sr_reboot_target();
++	(void)reboot_kernel(RB_AUTOBOOT, NULL);
++}
++
++static void
++sr_bootwd_arm(int secs)
++{
++	if (sr_bootwd_call == NULL) {
++		sr_bootwd_call = thread_call_allocate(sr_bootwd_fire, NULL);
++		if (sr_bootwd_call == NULL) {
++			printf("SWEET BOOTWD: no thread call, watchdog off\n");
++			return;
++		}
++	}
++	clock_interval_to_deadline(secs, NSEC_PER_SEC, &sr_bootwd_deadline);
++	thread_call_enter_delayed(sr_bootwd_call, sr_bootwd_deadline);
++	printf("SWEET BOOTWD: armed: in %d s, no TCP listener on port %d -> pstore + reboot to %s\n",
++	    secs, sr_bootwd_port, sr_name(sr_reboot_target()));
++}
++
++static int
++sr_bootwd_sysctl SYSCTL_HANDLER_ARGS
++{
++#pragma unused(arg1, arg2)
++	int left = 0, error, val;
++	uint64_t now = mach_absolute_time(), ns = 0;
++
++	if (sr_bootwd_deadline > now) {
++		absolutetime_to_nanoseconds(sr_bootwd_deadline - now, &ns);
++		left = (int)(ns / NSEC_PER_SEC) + 1;
++	}
++	val = left;
++	error = sysctl_handle_int(oidp, &val, 0, req);
++	if (error || !req->newptr) {
++		return error;
++	}
++	if (val < 0 || val > 86400) {
++		return EINVAL;
++	}
++	if (val == 0) {
++		sr_bootwd_deadline = 0;
++		if (sr_bootwd_call != NULL) {
++			(void)thread_call_cancel(sr_bootwd_call);
++		}
++		printf("SWEET BOOTWD: disarmed (sysctl)\n");
++		return 0;
++	}
++	if (sr_bootwd_call != NULL) {
++		(void)thread_call_cancel(sr_bootwd_call);
++	}
++	sr_bootwd_arm(val);
++	return 0;
++}
++
++SYSCTL_PROC(_kern, OID_AUTO, sweet_bootwd,
++    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sr_bootwd_sysctl, "I",
++    "Boot watchdog: seconds left (0 = off); write 0 to disarm, N to check for the TCP listener in N s");
++
+ /*
+  * Reset the SoC. Returns only if nothing reset it (or no reset was wanted:
+  * -1, the old behaviour). panic_restart: the call comes from a panic restart.
+@@ -464,7 +626,8 @@
+ 	if (!sr_ready) {
+ 		return -1;
+ 	}
+-	sr_reset(sr_override >= 0 ? sr_override : sr_bootarg, false);
++	/* 1210: a watchdog reboot resets warm so LineageOS still finds the pstore record */
++	sr_reset(sr_override >= 0 ? sr_override : sr_bootarg, sr_bootwd_fired);
+ 	return -1;
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */

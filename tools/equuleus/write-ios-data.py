@@ -2,6 +2,7 @@
 """Write a root image to the Mi 8 Pro's `ios_data` partition from LineageOS (rooted adb), and later only what changed.
 
   write-ios-data.py IMG --full        write all of IMG, verify by sha256 read-back, record IMG.phone (block hashes)
+  write-ios-data.py IMG --full --from MIB   resume an interrupted --full write at MIB (still verifies everything)
   write-ios-data.py IMG [--dry-run]   write only the 1 MiB blocks whose sha1 differs from IMG.phone, then verify
 
 IMG.phone holds the sha1 of every 1 MiB block as last written to the phone (the builder's IMG.blocks has the same
@@ -13,6 +14,7 @@ import hashlib
 import os
 import subprocess
 import sys
+import threading
 import time
 
 MB = 1 << 20
@@ -49,19 +51,70 @@ def runs_of(idx):
     return runs
 
 
-def write_run(f, start, count):
+PIECE = 1024                        # MiB per adb exec-in: a stalled pipe costs at most this much to redo
+STALL = 60                          # seconds without progress before the pipe is killed and the piece retried
+
+
+def write_once(f, start, count):
+    """Pipe count MiB from the image at start MiB into dd on the phone. Returns dd's rc, or None on a stall.
+
+    adb exec-in can hang for good mid-stream (seen 2026-11-12: 6.8 GiB in, both ends blocked for hours), so a
+    feeder thread writes while this thread watches its progress and kills the pipe when it stops moving."""
     f.seek(start * MB)
     p = subprocess.Popen(ADB + ['exec-in', f'dd of={PART} ibs=65536 obs=1048576 seek={start} 2>/dev/null'],
                          stdin=subprocess.PIPE)
-    left = count * MB
-    while left:
-        chunk = f.read(min(left, 8 * MB))
-        if not chunk:
+    state = {'sent': 0, 'err': None}
+
+    def feed():
+        try:
+            left = count * MB
+            while left:
+                chunk = f.read(min(left, 8 * MB))
+                if not chunk:
+                    break
+                p.stdin.write(chunk)
+                left -= len(chunk)
+                state['sent'] += len(chunk)
+            p.stdin.close()
+        except (BrokenPipeError, OSError, ValueError) as e:
+            state['err'] = e
+
+    t = threading.Thread(target=feed, daemon=True)
+    t.start()
+    last, since = -1, time.time()
+    while True:
+        t.join(5)
+        if not t.is_alive():
             break
-        p.stdin.write(chunk)
-        left -= len(chunk)
-    p.stdin.close()
-    return p.wait()
+        if state['sent'] != last:
+            last, since = state['sent'], time.time()
+        elif time.time() - since > STALL:
+            p.kill()
+            t.join(10)
+            return None
+    try:
+        rc = p.wait(timeout=STALL)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        return None
+    return rc if state['err'] is None else (rc or 1)
+
+
+def write_run(f, start, count):
+    for s in range(start, start + count, PIECE):
+        c = min(PIECE, start + count - s)
+        for attempt in range(1, 4):
+            rc = write_once(f, s, c)
+            if rc == 0:
+                break
+            print(f'  piece {s} MiB +{c} MiB: {"stalled" if rc is None else f"rc={rc}"} (try {attempt}/3)', flush=True)
+            sh('pkill -x dd')
+            subprocess.run(ADB + ['wait-for-device'])
+        else:
+            return rc if rc is not None else 1
+        if count > PIECE:
+            print(f'    {s + c}/{start + count} MiB', flush=True)
+    return 0
 
 
 def main():
@@ -78,7 +131,9 @@ def main():
     new = block_hashes(img)
     manifest = img + '.phone'
     if full:
-        idx = list(range(len(new)))
+        # --from MIB resumes an interrupted --full write; the full sha256 read-back below still checks every block
+        frm = int(sys.argv[sys.argv.index('--from') + 1]) if '--from' in sys.argv else 0
+        idx = list(range(frm, len(new)))
     else:
         if not os.path.exists(manifest):
             sys.exit(f'no {manifest}: run with --full first')
