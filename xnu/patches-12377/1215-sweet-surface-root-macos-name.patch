@@ -1,0 +1,35 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -775,9 +775,31 @@
+ 
+ public:
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++	using IOService::compareName;
++	virtual bool compareName(OSString *name, OSString **matched = NULL) const APPLE_KEXT_OVERRIDE;
+ };
+ 
+ OSDefineMetaClassAndStructors(IOCoreSurfaceRoot, IOService);
++
++/*
++ * Patch 1215: one surface root for both userlands. iOS's IOSurface.framework finds it with
++ * IOServiceNameMatching("IOCoreSurfaceRoot"), macOS 27's with IOServiceNameMatching("IOSurfaceRoot")
++ * (_ioSurfaceConnectInternal sleeps and retries forever otherwise: WindowServer hung in
++ * CA::WindowServer::AppleDisplay -> kern_CopyLayerDisplayedSurface, 2026-11-12). Answering to both
++ * names keeps a single surface table, so surfaces IOMobileFramebuffer hands out resolve for either.
++ */
++bool
++IOCoreSurfaceRoot::compareName(OSString *name, OSString **matched) const
++{
++	if (name != NULL && (name->isEqualTo("IOSurfaceRoot") || name->isEqualTo("IOCoreSurfaceRoot"))) {
++		if (matched != NULL) {
++			name->retain();
++			*matched = name;
++		}
++		return true;
++	}
++	return IOService::compareName(name, matched);
++}
+ 
+ bool
+ IOCoreSurfaceRoot::start(IOService *provider)
