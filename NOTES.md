@@ -2,7 +2,23 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 16:40: WindowServer + loginwindow RUN; screen black (compositing) <<<
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 17:30: FIRST macOS 27.2 WINDOW ON THE PANEL <<<
+* Screenshot: docs/milestones/2026-11-12-macos27-first-window.png (redwin: AppKit window, title bar + traffic
+  lights, SF text, drawn by WindowServer's software compositor, scanned out by our IOMFB).
+* The black screen was WindowServer crash-looping (launchctl print: runs 4, "Abort trap: 6") on QuartzCore's CPU
+  renderer assertion "r.update ()->_backdrop_invalidations_finalized" (ogl-layer.cpp prepare_layers_roi) for
+  backdrop layers (window title bars use a visual-effect backdrop even with reduceTransparency). Fix (dyld cache,
+  phone): QuartzCore 0x18de3523c tbz w10,#4 -> the loop's existing skip label 0x18de35300 (3620788a -> 3620062a,
+  tools/macdebug/patches-27.2/qc-backdrop-skip.sh, applied with tools/macdebug/phone-cache-patch.sh, backups in
+  /var/tmp/cachepatch-qc-backdrop-skip): an unfinalized backdrop layer renders without its backdrop effect.
+  TODO: add to the builder's CACHE_PATCHES_27_2.
+* Windows only appear before login with NSWindow.canBecomeVisibleWithoutLogin (WindowServer policy "cannot order in
+  untagged windows before login"). "unable to register bootstrap port com.apple.CARenderServer: 0x44f" is harmless
+  (the launchd endpoint is checked in and active).
+* NEXT: the login window itself (loginwindow -> authd -> SecurityAgent for system.login.console never starts),
+  touch input (digitizer needs displayUUID = IOMFBUUID), kernel "can't sleep", builder parity for all phone edits.
+
+### >>> Mi 8 Pro (equuleus) fork, 2026-11-12 16:40: WindowServer + loginwindow RUN; screen black (compositing) (history) <<<
 * Kernels since 14:00: 1216 (WindowServer '&BGA' surfaces -> BGRA), 1217 (HIDParameters on the IOHIDSystem stand-in:
   WindowServer deadlocked asking its own IOHIDEventSystem for NXClickTime), 1218 (identitysvc stand-in registers and
   idles: opendirectoryd spun at 100 % on ENOSYS). Image enxerto/out/equuleus-mac27-full-10.img (CI 43164710718).

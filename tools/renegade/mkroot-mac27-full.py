@@ -87,7 +87,10 @@ HELLO = """<?xml version="1.0" encoding="UTF-8"?>
 # dsc_patch.py VA=OLD:NEW words for the 27.2 cache: __WSSystemCanCompositeWithMetal_block_invoke's timeout path
 # branches to the normal return (Metal flag stays 0 -> software compositor) and waits 1 s instead of 30 s.
 CACHE_PATCHES_27_2 = ['0x1828bee84=f90013ff:17fffff1', '0x1828bee0c=d2958001:d2994001',
-                      '0x1828bee10=f2bf8461:f2a77341', '0x1828bee14=f2c000c1:d503201f']
+                      '0x1828bee10=f2bf8461:f2a77341', '0x1828bee14=f2c000c1:d503201f',
+                      # QuartzCore CPU renderer: an unfinalized backdrop layer takes the loop's skip path instead of
+                      # asserting "r.update ()->_backdrop_invalidations_finalized" (WindowServer crash loop)
+                      '0x18de3523c=3620788a:3620062a']
 
 REBOOTD = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
