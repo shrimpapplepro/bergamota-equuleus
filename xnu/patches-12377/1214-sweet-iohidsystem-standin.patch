@@ -26,7 +26,7 @@ diff --git a/iokit/Kernel/arm/hid/SweetHIDSystem.cpp b/iokit/Kernel/arm/hid/Swee
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/hid/SweetHIDSystem.cpp
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,322 @@
 +/*
 + * SWEET (patch 1214): an "IOHIDSystem" stand-in for macOS userland.
 + *
@@ -257,10 +257,7 @@ new file mode 100644
 +	if (!super::start(provider)) {
 +		return false;
 +	}
-+	setProperty(kIOUserClientDefaultLockingKey, kOSBooleanTrue);
-+	setProperty(kIOUserClientDefaultLockingSetPropertiesKey, kOSBooleanTrue);
-+	setProperty(kIOUserClientDefaultLockingSingleThreadExternalMethodKey, kOSBooleanFalse);
-+	setProperty(kIOUserClientEntitlementsKey, kOSBooleanFalse);
++	/* default IOUserClient locking: the methods only touch the shared memory and scalars */
 +	return true;
 +}
 +
