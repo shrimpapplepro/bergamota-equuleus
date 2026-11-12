@@ -1,0 +1,354 @@
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -78,6 +78,11 @@
+     "     'IOMatchCategory' = SweetHIDTouch;"
+     "   },"
+     "   {"
++    "     'IOClass'         = IOHIDSystem;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = IOHIDSystem;"
++    "   },"
++    "   {"
+     "     'IOClass'         = SweetBattery;"
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = SweetBattery;"
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -21,4 +21,5 @@
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp                  optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEventServiceUserClient.cpp             optional iokitcpp
++iokit/Kernel/arm/hid/SweetHIDSystem.cpp                          optional iokitcpp
+ iokit/Kernel/arm/SweetBusy.cpp                                   optional iokitcpp
+diff --git a/iokit/Kernel/arm/hid/SweetHIDSystem.cpp b/iokit/Kernel/arm/hid/SweetHIDSystem.cpp
+new file mode 100644
+--- /dev/null
++++ b/iokit/Kernel/arm/hid/SweetHIDSystem.cpp
+@@ -0,0 +1,325 @@
++/*
++ * SWEET (patch 1214): an "IOHIDSystem" stand-in for macOS userland.
++ *
++ * macOS 27's WindowServer (SkyLight WSInitialize) opens the IOHIDSystem service
++ * (IOHIDFamily, which this kernel does not have), calls IOHIDCreateSharedMemory
++ * (selector 0) and maps kIOHIDGlobalMemory (EvOffsets + EvGlobals); if any of it
++ * fails it logs "Cannot open the HID and display/cursor system." and exits 1
++ * (seen 2026-11-12). This class publishes a service of that name with:
++ *
++ *   connect type 0 (kIOHIDServerConnectType, IOHIDUserClient): the 13 legacy
++ *     selectors of IOHIDFamily's IOHIDUserClient (createShmem, setEventsEnable,
++ *     setCursorEnable, extPostEvent, extSetMouseLocation, extGetButtonEventNum,
++ *     extSetBounds, extRegisterVirtualDisplay, ...), answered without a real event
++ *     path, and the shared memory initialised as IOHIDSystem::initShmem does;
++ *   connect type 1 (kIOHIDParamConnectType): every selector succeeds;
++ *   connect type 3 (kIOHIDEventSystemConnectType): not offered yet.
++ *
++ * The shared memory layout is taken from the macOS SDK's IOKit/hidsystem/IOHIDShared.h
++ * (offsets measured with the SDK on 2026-11-12, see the SWEET_EVG_* constants), not
++ * from structure definitions, so nothing here depends on IOHIDFamily headers.
++ * Input (touch panel as a trackpad) is a later step. Boot-arg sweethidsystem=0: not published.
++ * Each new (connect type, selector) is logged once as "SWEET HIDSYS:".
++ */
++#include <IOKit/IOLib.h>
++#include <IOKit/IOService.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOBufferMemoryDescriptor.h>
++#include <pexpert/pexpert.h>
++
++/* IOHIDShared.h, macOS SDK 2026 (EvGlobals version 4): sizes and offsets */
++#define SWEET_EVO_SIZE                  8       /* EvOffsets: evGlobalsOffset, evShmemOffset */
++#define SWEET_EVG_SIZE                  23264   /* sizeof(EvGlobals) */
++#define SWEET_EVG_ENUM                  4
++#define SWEET_EVG_CURSORLOC             20      /* IOGPoint: SInt16 x, y */
++#define SWEET_EVG_WORKBOUNDS            28      /* IOGBounds: SInt16 minx, maxx, miny, maxy */
++#define SWEET_EVG_VERSION               44
++#define SWEET_EVG_STRUCTSIZE            48
++#define SWEET_EVG_LASTFRAME             52
++#define SWEET_EVG_WAITCURSORENABLED     205
++#define SWEET_EVG_GLOBALWAITCURSORENABLED 206
++#define SWEET_EVG_WAITTHRESHOLD         208
++#define SWEET_EVG_LLEHEAD               212
++#define SWEET_EVG_LLETAIL               216
++#define SWEET_EVG_LLELAST               220
++#define SWEET_EVG_LLEQ                  224
++#define SWEET_EVG_LLEQ_ELEM             96      /* sizeof(NXEQElement); next at +0, sema at +4 */
++#define SWEET_EVG_LLEQ_COUNT            240     /* LLEQSIZE */
++#define SWEET_SHMEM_VERSION             4       /* kIOHIDCurrentShmemVersion */
++#define SWEET_INITEVENTNUM              13
++#define SWEET_EV_MAXCURSOR              3
++#define SWEET_WAIT_THRESHOLD            74      /* (12 * EV_TICKS_PER_SEC) / 10, EV_TICKS_PER_SEC = 62 */
++static_assert(SWEET_EVO_SIZE + SWEET_EVG_SIZE <= 32768, "shared memory size");
++static_assert(SWEET_EVG_LLEQ + SWEET_EVG_LLEQ_ELEM * SWEET_EVG_LLEQ_COUNT == SWEET_EVG_SIZE, "EvGlobals layout");
++
++enum {
++	kSweetHIDServerConnectType      = 0,
++	kSweetHIDParamConnectType       = 1,
++	kSweetHIDEventSystemConnectType = 3,
++	kSweetHIDGlobalMemory           = 0,
++};
++
++class IOHIDSystem : public IOService {
++	OSDeclareDefaultStructors(IOHIDSystem);
++public:
++	virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn newUserClient(task_t owningTask, void *securityID, UInt32 type,
++	    OSDictionary *properties, IOUserClient **handler) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn newUserClient(task_t owningTask, void *securityID, UInt32 type,
++	    IOUserClient **handler) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn setProperties(OSObject *properties) APPLE_KEXT_OVERRIDE;
++
++	void initShmem(void);
++	void setBounds(const void *bounds, size_t size);
++	void logSelector(UInt32 type, uint32_t selector);
++	IOBufferMemoryDescriptor *fShmem;
++private:
++	uint64_t fSeen[4][2];   /* per connect type 0,1,(2),3: selectors 0..127 logged */
++};
++
++class SweetHIDSystemUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(SweetHIDSystemUserClient);
++public:
++	bool initClient(task_t task, void *securityID, UInt32 type, IOHIDSystem *owner);
++	virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	virtual IOService *getService(void) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn registerNotificationPort(mach_port_t port, UInt32 type, io_user_reference_t refCon) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn registerNotificationPort(mach_port_t port, UInt32 type, UInt32 refCon) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn connectClient(IOUserClient *client) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn clientMemoryForType(UInt32 type, IOOptionBits *options, IOMemoryDescriptor **memory) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	    IOExternalMethodDispatch *dispatch, OSObject *target, void *reference) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn setProperties(OSObject *properties) APPLE_KEXT_OVERRIDE;
++private:
++	IOHIDSystem *fOwner;
++	UInt32 fType;
++};
++
++#define super IOService
++OSDefineMetaClassAndStructors(IOHIDSystem, IOService);
++
++bool
++IOHIDSystem::start(IOService *provider)
++{
++	int on = 1;
++
++	(void)PE_parse_boot_argn("sweethidsystem", &on, sizeof(on));
++	if (!on) {
++		return false;
++	}
++	if (!super::start(provider)) {
++		return false;
++	}
++	/* 32 KiB, 16 KiB aligned: two 16K pages (or eight 4K ones) hold EvOffsets + EvGlobals (23272 bytes) */
++	fShmem = IOBufferMemoryDescriptor::withOptions(kIODirectionNone | kIOMemoryKernelUserShared, 32768, 16384);
++	if (fShmem == NULL) {
++		IOLog("SWEET HIDSYS: no shared memory\n");
++		return false;
++	}
++	initShmem();
++	setProperty("IOUserClientClass", "IOHIDUserClient");
++	registerService();
++	IOLog("SWEET HIDSYS: IOHIDSystem stand-in published (EvGlobals v%d, %d bytes)\n", SWEET_SHMEM_VERSION, SWEET_EVG_SIZE);
++	return true;
++}
++
++/* As IOHIDFamily's IOHIDSystem::initShmem(true): EvOffsets, then EvGlobals with an empty event queue. */
++void
++IOHIDSystem::initShmem(void)
++{
++	uint8_t *m = (uint8_t *)fShmem->getBytesNoCopy();
++	uint8_t *g = m + SWEET_EVO_SIZE;
++
++	bzero(m, fShmem->getLength());
++	((int32_t *)(void *)m)[0] = SWEET_EVO_SIZE;                         /* evGlobalsOffset */
++	((int32_t *)(void *)m)[1] = SWEET_EVO_SIZE + SWEET_EVG_SIZE;        /* evShmemOffset */
++	*(int32_t *)(void *)(g + SWEET_EVG_VERSION) = SWEET_SHMEM_VERSION;
++	*(int32_t *)(void *)(g + SWEET_EVG_STRUCTSIZE) = SWEET_EVG_SIZE;
++	g[SWEET_EVG_WAITCURSORENABLED] = 1;
++	g[SWEET_EVG_GLOBALWAITCURSORENABLED] = 1;
++	*(int32_t *)(void *)(g + SWEET_EVG_LASTFRAME) = SWEET_EV_MAXCURSOR;
++	*(int32_t *)(void *)(g + SWEET_EVG_WAITTHRESHOLD) = SWEET_WAIT_THRESHOLD;
++	*(int32_t *)(void *)(g + SWEET_EVG_ENUM) = SWEET_INITEVENTNUM;
++	for (int i = 0; i < SWEET_EVG_LLEQ_COUNT; i++) {
++		uint8_t *e = g + SWEET_EVG_LLEQ + SWEET_EVG_LLEQ_ELEM * i;
++		*(int32_t *)(void *)e = (i == SWEET_EVG_LLEQ_COUNT - 1) ? 0 : i + 1;   /* next */
++	}
++	*(int32_t *)(void *)(g + SWEET_EVG_LLELAST) = 0;
++	*(int32_t *)(void *)(g + SWEET_EVG_LLEHEAD) = 1;
++	*(int32_t *)(void *)(g + SWEET_EVG_LLETAIL) = 1;
++}
++
++void
++IOHIDSystem::setBounds(const void *bounds, size_t size)
++{
++	if (bounds != NULL && size >= 8) {
++		bcopy(bounds, (uint8_t *)fShmem->getBytesNoCopy() + SWEET_EVO_SIZE + SWEET_EVG_WORKBOUNDS, 8);
++	}
++}
++
++void
++IOHIDSystem::logSelector(UInt32 type, uint32_t selector)
++{
++	const unsigned t = type < 4 ? type : 2, s = selector & 127;
++	if (!(fSeen[t][s / 64] & (1ULL << (s % 64)))) {
++		fSeen[t][s / 64] |= 1ULL << (s % 64);
++		IOLog("SWEET HIDSYS: connect type %u selector %u\n", (unsigned)type, (unsigned)selector);
++	}
++}
++
++IOReturn
++IOHIDSystem::setProperties(OSObject *properties)
++{
++	(void)properties;
++	return kIOReturnSuccess;        /* HID parameters (acceleration, key repeat, ...) are accepted and ignored */
++}
++
++IOReturn
++IOHIDSystem::newUserClient(task_t owningTask, void *securityID, UInt32 type, IOUserClient **handler)
++{
++	return newUserClient(owningTask, securityID, type, NULL, handler);
++}
++
++IOReturn
++IOHIDSystem::newUserClient(task_t owningTask, void *securityID, UInt32 type, OSDictionary *properties,
++    IOUserClient **handler)
++{
++	(void)properties;
++	if (type != kSweetHIDServerConnectType && type != kSweetHIDParamConnectType) {
++		IOLog("SWEET HIDSYS: connect type %u not offered\n", (unsigned)type);
++		return kIOReturnUnsupported;
++	}
++	SweetHIDSystemUserClient *client = OSTypeAlloc(SweetHIDSystemUserClient);
++	if (client == NULL) {
++		return kIOReturnNoMemory;
++	}
++	if (!client->initClient(owningTask, securityID, type, this) || !client->attach(this)) {
++		client->release();
++		return kIOReturnBadArgument;
++	}
++	if (!client->start(this)) {
++		client->detach(this);
++		client->release();
++		return kIOReturnUnsupported;
++	}
++	*handler = client;
++	return kIOReturnSuccess;
++}
++
++#undef super
++#define super IOUserClient
++OSDefineMetaClassAndStructors(SweetHIDSystemUserClient, IOUserClient);
++
++bool
++SweetHIDSystemUserClient::initClient(task_t task, void *securityID, UInt32 type, IOHIDSystem *owner)
++{
++	if (!super::initWithTask(task, securityID, type)) {
++		return false;
++	}
++	fOwner = owner;
++	fType = type;
++	return true;
++}
++
++bool
++SweetHIDSystemUserClient::start(IOService *provider)
++{
++	if (!super::start(provider)) {
++		return false;
++	}
++	setProperty(kIOUserClientDefaultLockingKey, kOSBooleanTrue);
++	setProperty(kIOUserClientDefaultLockingSetPropertiesKey, kOSBooleanTrue);
++	setProperty(kIOUserClientDefaultLockingSingleThreadExternalMethodKey, kOSBooleanFalse);
++	setProperty(kIOUserClientEntitlementsKey, kOSBooleanFalse);
++	return true;
++}
++
++IOReturn
++SweetHIDSystemUserClient::clientClose(void)
++{
++	terminate();
++	return kIOReturnSuccess;
++}
++
++IOService *
++SweetHIDSystemUserClient::getService(void)
++{
++	return fOwner;
++}
++
++IOReturn
++SweetHIDSystemUserClient::registerNotificationPort(mach_port_t port, UInt32 type, io_user_reference_t refCon)
++{
++	(void)port; (void)type; (void)refCon;
++	return kIOReturnSuccess;
++}
++
++IOReturn
++SweetHIDSystemUserClient::registerNotificationPort(mach_port_t port, UInt32 type, UInt32 refCon)
++{
++	(void)port; (void)type; (void)refCon;
++	return kIOReturnSuccess;
++}
++
++IOReturn
++SweetHIDSystemUserClient::connectClient(IOUserClient *client)
++{
++	(void)client;
++	return kIOReturnSuccess;        /* a framebuffer's screen registration: no cursor path yet */
++}
++
++IOReturn
++SweetHIDSystemUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMemoryDescriptor **memory)
++{
++	if (fType != kSweetHIDServerConnectType || type != kSweetHIDGlobalMemory || fOwner == NULL || fOwner->fShmem == NULL) {
++		return kIOReturnBadArgument;
++	}
++	*options = 0;
++	fOwner->fShmem->retain();
++	*memory = fOwner->fShmem;
++	return kIOReturnSuccess;
++}
++
++IOReturn
++SweetHIDSystemUserClient::setProperties(OSObject *properties)
++{
++	return fOwner ? fOwner->setProperties(properties) : kIOReturnOffline;
++}
++
++IOReturn
++SweetHIDSystemUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++    IOExternalMethodDispatch *dispatch, OSObject *target, void *reference)
++{
++	(void)dispatch; (void)target; (void)reference;
++	if (fOwner == NULL) {
++		return kIOReturnOffline;
++	}
++	fOwner->logSelector(fType, selector);
++	for (uint32_t i = 0; i < args->scalarOutputCount; i++) {
++		args->scalarOutput[i] = 0;
++	}
++	if (fType == kSweetHIDParamConnectType) {
++		return kIOReturnSuccess;        /* extPostEvent, parameters: accepted */
++	}
++	switch (selector) {
++	case 0:         /* createShmem(version) */
++		if (args->scalarInputCount >= 1 && args->scalarInput[0] < 3) {
++			return kIOReturnUnsupported;    /* below kIOHIDLastCompatibleShmemVersion */
++		}
++		fOwner->initShmem();
++		return kIOReturnSuccess;
++	case 6:         /* extSetBounds(IOGBounds) */
++		fOwner->setBounds(args->structureInput, args->structureInputSize);
++		return kIOReturnSuccess;
++	case 7:         /* extRegisterVirtualDisplay -> token */
++		if (args->scalarOutputCount >= 1) {
++			args->scalarOutput[0] = 1;
++		}
++		return kIOReturnSuccess;
++	case 1: case 2: case 3: case 4: case 5: case 8: case 9: case 10: case 11: case 12:
++		return kIOReturnSuccess;        /* events/cursor enable, post event, mouse location, ... */
++	default:
++		return kIOReturnBadArgument;
++	}
++}
